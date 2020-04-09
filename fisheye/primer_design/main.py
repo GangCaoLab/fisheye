@@ -2,11 +2,12 @@ import os
 from os.path import join, exists
 import fire
 import numpy as np
+import math
+from numpy import array
 import pandas as pd
 from pyfaidx import Fasta
-from collections import Counter
 import RNA
-
+import primer3
 from fisheye.utils import get_logger
 
 
@@ -79,13 +80,43 @@ def self_match(probe, min_match = 4):
                 match_pairs = match_pairs + 1
     return match_pairs
 
-def normalization(match_pairs_pad, match_pairs_amp, region, fold_score):
-    # 让值有参考意义
-    value = np.array([match_pairs_pad, match_pairs_amp, region, fold_score])
-    value_mean = value.mean(axis=0)
-    value_std = value.std(axis=0)
-    conbined_score = np.sum((value-value_mean)/value_std)
-    return conbined_score
+
+def cal_weight(df):
+    '''熵值法计算变量的权重'''
+    # 标准化
+    x = df.apply(lambda x: ((x - np.min(x)) / (np.max(x) - np.min(x))))
+    # 求k
+    rows = x.index.size  # 行
+    cols = x.columns.size  # 列
+    k = 1.0 / math.log(rows)
+
+    lnf = [[None] * cols for i in range(rows)]
+
+    # 信息熵
+    x = array(x)
+    lnf = [[None] * cols for i in range(rows)]
+    lnf = array(lnf)
+    for i in range(0, rows):
+        for j in range(0, cols):
+            if x[i][j] == 0:
+                lnfij = 0.0
+            else:
+                p = x[i][j] / x.sum(axis=0)[j]
+                lnfij = math.log(p) * p * (-k)
+            lnf[i][j] = lnfij
+    lnf = pd.DataFrame(lnf)
+    E = lnf
+
+    # 计算冗余度
+    d = 1 - E.sum(axis=0)
+    # 计算各指标的权重
+    w = [[None] * 1 for i in range(cols)]
+    for j in range(0, cols):
+        wj = d[j] / sum(d)
+        w[j] = wj
+    w = pd.DataFrame(w).T
+    w.columns = ['point1', 'point2', 'tm_region', 'RNAfold_score']
+    return w
 
 def primer_design(seq, min_length=40):
     df_lst = []
@@ -97,12 +128,9 @@ def primer_design(seq, min_length=40):
         tem2 = tem[13:26]
         tem3 = tem[27:40]
         tem4 = tem[26]
-        cg1 = Counter(tem1)["G"] + Counter(tem1)["C"] # use primer3 or biopython
-        cg2 = Counter(tem2)["G"] + Counter(tem2)["C"]
-        cg3 = Counter(tem3)["G"] + Counter(tem3)["C"]
-        tm1 = 2 * (13 - cg1) + 4 * cg1
-        tm2 = 2 * (13 - cg2) + 4 * cg2
-        tm3 = 2 * (14 - cg3) + 4 * cg3
+        tm1 = primer3.calcTm(tem1)
+        tm2 = primer3.calcTm(tem2)
+        tm3 = primer3.calcTm(tem3)
         region = max(tm1,tm2,tm3) - min(tm1,tm2,tm3)
         tem1_re = reverse_complement(tem1)
         tem2_re = reverse_complement(tem2)
@@ -111,13 +139,10 @@ def primer_design(seq, min_length=40):
         amp_probe = tem3_re+tem4+"ACTGCAGGCTCCA"
         match_pairs_pad = self_match(pad_probe)
         match_pairs_amp = self_match(amp_probe)
-        conbined_score = normalization(match_pairs_pad, match_pairs_amp, region, fold_score)
-        df_lst.append([match_pairs_pad, match_pairs_amp, region, tm1, tm2, tm3, fold_score, conbined_score, pad_probe, amp_probe])
+        df_lst.append([match_pairs_pad, match_pairs_amp, region, tm1, tm2, tm3, fold_score, pad_probe, amp_probe])
     df = pd.DataFrame(df_lst)
-    df.columns = ['point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'conbined_score','primer1', 'primer2']
-    df.sort_values(['conbined_score'])
+    df.columns = ['point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'primer1', 'primer2']
     return df
-
 
 def main(genelist, gtf, fasta, output_dir="primers"):
     """
@@ -130,12 +155,40 @@ def main(genelist, gtf, fasta, output_dir="primers"):
     seq_lst = sequence_pickup(df_gtf, fa, genelist, min_length=40)
     if not exists(output_dir):
         os.mkdir(output_dir)
+    best = []
     for name, seq in seq_lst.items():
         log.info("Designing primer for gene " + name + ":")
         res_df = primer_design(seq)
+        weight_df = cal_weight(res_df[['point1','point2','tm_region','RNAfold_score']])
+        score_lst = []
+        for item in res_df.iterrows():
+            score = item[1]['point1'] * weight_df['point1'] + item[1]['point2'] * weight_df['point2'] + item[1]['tm_region'] * weight_df['tm_region'] + item[1]['RNAfold_score'] * weight_df['RNAfold_score']
+            score_lst.append(score)
+        score_lst = pd.DataFrame(score_lst)
+        score_lst.columns = ['score']
+        score = score_lst.pop('score')
+        res_df['score'] = score
+        res_df.sort_values('score', inplace=True)
+        res_df = res_df.reset_index(drop=True)
+        geneID = name
+        point1 = res_df.loc[0, :].to_frame().T['point1'][0]
+        point2 = res_df.loc[0, :].to_frame().T['point2'][0]
+        tm_region = res_df.loc[0, :].to_frame().T['tm_region'][0]
+        tm1 = res_df.loc[0, :].to_frame().T['tm1'][0]
+        tm2 = res_df.loc[0, :].to_frame().T['tm2'][0]
+        tm3 = res_df.loc[0, :].to_frame().T['tm3'][0]
+        RNAfold_score = res_df.loc[0, :].to_frame().T['RNAfold_score'][0]
+        score = primer1 = res_df.loc[0, :].to_frame().T['score'][0]
+        primer1 = res_df.loc[0, :].to_frame().T['primer1'][0]
+        primer2 = res_df.loc[0, :].to_frame().T['primer2'][0]
+        best.append([geneID,point1,point2,tm_region,tm1,tm2,tm3,RNAfold_score,score,primer1,primer2])
         out_path = join(output_dir, f"{name}.csv")
         log.info("Save results to: " + out_path)
         res_df.to_csv(out_path)
+    best = pd.DataFrame(best)
+    best.columns = ['geneID', 'point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'score','primer1', 'primer2']
+    out_path = join(output_dir, "best_primer.csv")
+    best.to_csv(out_path, index=False)
 
 
 fire.Fire(main)
