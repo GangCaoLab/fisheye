@@ -20,7 +20,6 @@ def read_gene(genelist):
     return genelist
 
 def read_gtf(gtf):
-    log.info("Reading gtf: " + gtf)
     df = pd.read_csv(gtf, sep='\t', header=None)
     df.columns = ['chr', 'source', 'type', 'start', 'end', 'X1', 'strand', 'X2', 'fields']
     df['gene_name'] = df.fields.str.extract("gene_name \"(.*?)\"")
@@ -142,6 +141,15 @@ def primer_design(seq, min_length=40):
         df_lst.append([match_pairs_pad, match_pairs_amp, region, tm1, tm2, tm3, fold_score, pad_probe, amp_probe])
     df = pd.DataFrame(df_lst)
     df.columns = ['point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'primer1', 'primer2']
+
+    weight_df = cal_weight(df[['point1','point2','tm_region','RNAfold_score']])
+    scores = df['point1'] * weight_df['point1'].iloc[0] +\
+             df['point2'] * weight_df['point2'].iloc[0] +\
+             df['tm_region'] * weight_df['tm_region'].iloc[0] +\
+             df['RNAfold_score'] * weight_df['RNAfold_score'].iloc[0]
+    df['score'] = scores
+    df.sort_values('score', inplace=True)
+    df = df.reset_index(drop=True)
     return df
 
 def main(genelist, gtf, fasta, output_dir="primers"):
@@ -150,44 +158,30 @@ def main(genelist, gtf, fasta, output_dir="primers"):
     output: results/{gene}.csv
     """
     fa = Fasta(fasta)
+    log.info("Reading gtf: " + gtf)
     genelist = read_gene(genelist)
     df_gtf = read_gtf(gtf)
+    log.info("pickup seqences..")
     seq_lst = sequence_pickup(df_gtf, fa, genelist, min_length=40)
+    # TODO: calculate specificity:
+    # 1. save all gene's all transcripts to fasta
+    #    make aligner index
+    # 2. save all sub seqs(40bp) of seq in seq_lst to fastq
+    # 3. align fastq to aligner index get sam file
+    # 4. iterate sam file, count out-of region aligns.
     if not exists(output_dir):
         os.mkdir(output_dir)
     best = []
     for name, seq in seq_lst.items():
         log.info("Designing primer for gene " + name + ":")
         res_df = primer_design(seq)
-        weight_df = cal_weight(res_df[['point1','point2','tm_region','RNAfold_score']])
-        score_lst = []
-        for item in res_df.iterrows():
-            score = item[1]['point1'] * weight_df['point1'] + item[1]['point2'] * weight_df['point2'] + item[1]['tm_region'] * weight_df['tm_region'] + item[1]['RNAfold_score'] * weight_df['RNAfold_score']
-            score_lst.append(score)
-        score_lst = pd.DataFrame(score_lst)
-        score_lst.columns = ['score']
-        score = score_lst.pop('score')
-        res_df['score'] = score
-        res_df.sort_values('score', inplace=True)
-        res_df = res_df.reset_index(drop=True)
-        geneID = name
-        point1 = res_df.loc[0, :].to_frame().T['point1'][0]
-        point2 = res_df.loc[0, :].to_frame().T['point2'][0]
-        tm_region = res_df.loc[0, :].to_frame().T['tm_region'][0]
-        tm1 = res_df.loc[0, :].to_frame().T['tm1'][0]
-        tm2 = res_df.loc[0, :].to_frame().T['tm2'][0]
-        tm3 = res_df.loc[0, :].to_frame().T['tm3'][0]
-        RNAfold_score = res_df.loc[0, :].to_frame().T['RNAfold_score'][0]
-        score = primer1 = res_df.loc[0, :].to_frame().T['score'][0]
-        primer1 = res_df.loc[0, :].to_frame().T['primer1'][0]
-        primer2 = res_df.loc[0, :].to_frame().T['primer2'][0]
-        best.append([geneID,point1,point2,tm_region,tm1,tm2,tm3,RNAfold_score,score,primer1,primer2])
+        best.append(res_df.iloc[0, :])
         out_path = join(output_dir, f"{name}.csv")
         log.info("Save results to: " + out_path)
         res_df.to_csv(out_path)
     best = pd.DataFrame(best)
-    best.columns = ['geneID', 'point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'score','primer1', 'primer2']
     out_path = join(output_dir, "best_primer.csv")
+    log.info(f"Store best primers to: {out_path}")
     best.to_csv(out_path, index=False)
 
 
