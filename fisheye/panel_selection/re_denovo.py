@@ -1,7 +1,4 @@
-#!/E:/Python-3.7.0(pycharm)/python
-# -*- coding:UTF-8 -*-
-# author: wangcong
-# time: 2020/4/10
+
 import fire
 import numpy as np
 from anndata import AnnData
