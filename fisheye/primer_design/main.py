@@ -8,6 +8,7 @@ import pandas as pd
 from pyfaidx import Fasta
 import RNA
 import primer3
+import glob
 from fisheye.utils import get_logger
 
 
@@ -117,7 +118,7 @@ def cal_weight(df):
     w.columns = ['point1', 'point2', 'tm_region', 'RNAfold_score']
     return w
 
-def primer_design(seq, min_length=40):
+def primer_design(name, seq, min_length=40):
     df_lst = []
     seq_len = len(seq)
     for i in range(0,len(seq)-min_length+1):
@@ -138,6 +139,8 @@ def primer_design(seq, min_length=40):
         amp_probe = tem3_re+tem4+"ACTGCAGGCTCCA"
         match_pairs_pad = self_match(pad_probe)
         match_pairs_amp = self_match(amp_probe)
+        with open(f'{name}.fa', 'a+') as f:
+            f.write('>' + name + '\t' + str(i) + '\n' + tem + '\n')
         df_lst.append([match_pairs_pad, match_pairs_amp, region, tm1, tm2, tm3, fold_score, pad_probe, amp_probe])
     df = pd.DataFrame(df_lst)
     df.columns = ['point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'primer1', 'primer2']
@@ -151,6 +154,19 @@ def primer_design(seq, min_length=40):
     df.sort_values('score', inplace=True)
     df = df.reset_index(drop=True)
     return df
+
+def write_fq():
+    for i in glob.glob('*.fa'):
+        with open(i, 'r') as f1:
+            N = 0
+            with open("%s.fq" % i[:-3], 'w') as f2:
+                for line in f1:
+                    N += 1
+                    if N % 2 == 1:
+                        f2.write('@' + line[1:])
+                    else:
+                        length = len(line[5:-5])
+                        f2.write(line + '+' + '\n' + '>' * 5 + 'G' * length + 'B' * 4 + '\n')
 
 def main(genelist, gtf, fasta, output_dir="primers"):
     """
@@ -174,7 +190,8 @@ def main(genelist, gtf, fasta, output_dir="primers"):
     best = []
     for name, seq in seq_lst.items():
         log.info("Designing primer for gene " + name + ":")
-        res_df = primer_design(seq)
+        res_df = primer_design(name,seq)
+        write_fq()
         best.append(res_df.iloc[0, :])
         out_path = join(output_dir, f"{name}.csv")
         log.info("Save results to: " + out_path)
