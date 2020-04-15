@@ -102,7 +102,7 @@ def cal_weight(df):
         wj = d[j] / sum(d)
         w[j] = wj
     w = pd.DataFrame(w).T
-    w.columns = ['point1', 'point2', 'tm_region', 'RNAfold_score']
+    w.columns = ['point1', 'point2', 'tm_region', 'RNAfold_score','maps']
     return w
 
 
@@ -185,20 +185,24 @@ def primer_design(name, seq, min_length=40):
     
     write_fastq(name, sub_seqs)
     for fq in glob.glob('./primer_tmp.0/*fq'):
-        align_se_sen(fq,'./GRCm38_primary_assembly_transcript','primer_tmp.0')
-    Aln = t.Tuple[str, int, int]
-    Block = t.Tuple[str, str, t.List[Aln]]
-    
-    # processing sam -> number of alns 
-
+        sam_path = align_se_sen(fq,'./GRCm38_primary_assembly_transcript','./primr_tmp.0/'"%s.sam"%fq[:-3])
+        Aln = t.Tuple[str, int, int]
+        Block = t.Tuple[str, str, t.List[Aln]]
+        maps_lst = []
+        for alns in read_align_blocks(sam_path):
+            maps = len(alns)
+            maps_lst.append(maps)
+    for i in range(0,len(df_lst)):
+        df_lst[i].insert(7,maps_lst[i])
     df = pd.DataFrame(df_lst)
-    df.columns = ['point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'primer1', 'primer2']
+    df.columns = ['point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'maps', 'primer1', 'primer2']
 
-    weight_df = cal_weight(df[['point1','point2','tm_region','RNAfold_score']])
+    weight_df = cal_weight(df[['point1','point2','tm_region','RNAfold_score','maps']])
     scores = df['point1'] * weight_df['point1'].iloc[0] +\
              df['point2'] * weight_df['point2'].iloc[0] +\
              df['tm_region'] * weight_df['tm_region'].iloc[0] +\
-             df['RNAfold_score'] * weight_df['RNAfold_score'].iloc[0]
+             df['RNAfold_score'] * weight_df['RNAfold_score'].iloc[0] + \
+             df['maps'] * weight_df['maps'].iloc[0]
     df['score'] = scores
     df.sort_values('score', inplace=True)
     df = df.reset_index(drop=True)
