@@ -34,7 +34,14 @@ def main(path, outpath=None, cluster_res=None,
     outfig = f"marker_genes_{compare_method}.png"
     log.info(f"Write compare result figure to {outfig}")
     plt.savefig(outfig)
-    m_markers = pd.DataFrame(adata.uns['rank_genes_groups']['names']).head(10) 
+    # TODO:
+    # 1. add score threshold option
+    #    (1) output the number of markers per cluster
+    # 2. Make output more verbose
+    #    (1) sort genes by score
+    #    (2) output a table, columns: [gene, mean_score, n_repeates]
+    # 3. Calculate ARI of current markers
+    m_markers = pd.DataFrame(adata.uns['rank_genes_groups']['names']).head(markers_per_group) 
     markers = pd.concat([m_markers.iloc[i] for i in range(m_markers.shape[0])]).reset_index(drop=True).unique() 
     log.info(f"marker genes: {markers}")
     if outpath:

@@ -97,6 +97,8 @@ class FindMarkers():
 
     def _run_reduce_loop(self):
         """Find smallest negative inc gene, remove from G."""
+        # TODO
+        # 1. try reduce 2 genes at once
         inc2name = {}  # score inc -> gene name
         genes, G, adata, labels_kc, map_, cal_score = (
             self.genes, self.G, self.adata, self.labels_kc,
