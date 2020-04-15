@@ -9,6 +9,9 @@ from pyfaidx import Fasta
 import RNA
 import primer3
 import glob
+import typing as t
+import subprocess as subp
+import pysam
 from fisheye.utils import get_logger
 from fisheye.utils import reverse_complement
 
@@ -75,17 +78,11 @@ def self_match(probe, min_match = 4):
 
 
 def cal_weight(df):
-    '''熵值法计算变量的权重'''
-    # 标准化
     x = df.apply(lambda x: ((x - np.min(x)) / (np.max(x) - np.min(x))))
-    # 求k
-    rows = x.index.size  # 行
-    cols = x.columns.size  # 列
+    rows = x.index.size
+    cols = x.columns.size
     k = 1.0 / math.log(rows)
-
     lnf = [[None] * cols for i in range(rows)]
-
-    # 信息熵
     x = array(x)
     lnf = [[None] * cols for i in range(rows)]
     lnf = array(lnf)
@@ -99,10 +96,7 @@ def cal_weight(df):
             lnf[i][j] = lnfij
     lnf = pd.DataFrame(lnf)
     E = lnf
-
-    # 计算冗余度
     d = 1 - E.sum(axis=0)
-    # 计算各指标的权重
     w = [[None] * 1 for i in range(cols)]
     for j in range(0, cols):
         wj = d[j] / sum(d)
@@ -113,12 +107,55 @@ def cal_weight(df):
 
 
 def write_fastq(gene, seqs):
-    with open(f'{TMP_DIR}/{gene}.fa', 'w') as f:
+    with open(f'{TMP_DIR}/{gene}.fq', 'w') as f:
         for i, seq in enumerate(seqs):
             f.write(f"@{gene}_{i}\n")
             f.write(seq+"\n")
             f.write("+\n")
             f.write("~"*len(seq)+"\n")
+
+
+def align_se_sen(fq_path: str,
+                 index: str,
+                 sam_path: str,
+                 threads: int = 10,
+                 log: t.Optional[str] = 'bowtie2.log',
+                 header: bool = True,
+                 ) -> str:
+    cmd = ["bowtie2", "-x", index, "-U", fq_path]
+    if not header:
+        cmd.append("--no-hd")
+    cmd += ["-t", "-k", "100", "--very-sensitive-local"]
+    cmd += ["-p", str(threads)]
+    cmd += ["-S", sam_path]
+    cmd = " ".join(cmd)
+    if log:
+        cmd += f" 2> {log}"
+    subp.check_call(cmd, shell=True)
+    return sam_path
+
+
+def read_align_blocks(
+        sam_path: str
+        ) -> t.Iterable[Block]:
+    def yield_cond(old, rec, block, end=False):
+        res = (old is not None) and (len(block) > 0)
+        if res and not end:
+            res &= rec.query_name != old.query_name
+        return res
+    with pysam.AlignmentFile(sam_path, mode='r') as sam:
+        alns = []
+        old = None
+        for rec in sam.fetch():
+            aln = rec.reference_name, rec.reference_start, rec.reference_end
+            if yield_cond(old, rec, alns):
+                yield old.query_name, old.query_sequence, alns
+                alns = []
+            if aln[0] is not None:
+                alns.append(aln)
+            old = rec
+        if yield_cond(old, rec, alns, end=True):
+            yield old.query_name, old.query_sequence, alns
 
 
 def primer_design(name, seq, min_length=40):
@@ -147,7 +184,11 @@ def primer_design(name, seq, min_length=40):
         df_lst.append([match_pairs_pad, match_pairs_amp, region, tm1, tm2, tm3, fold_score, pad_probe, amp_probe])
     
     write_fastq(name, sub_seqs)
-    # align
+    for fq in glob.glob('./primer_tmp.0/*fq'):
+        align_se_sen(fq,'./GRCm38_primary_assembly_transcript','primer_tmp.0')
+    Aln = t.Tuple[str, int, int]
+    Block = t.Tuple[str, str, t.List[Aln]]
+    
     # processing sam -> number of alns 
 
     df = pd.DataFrame(df_lst)
@@ -175,12 +216,6 @@ def main(genelist, gtf, fasta, output_dir="primers"):
     log.info("pickup seqences..")
     log.info(f"Create tmp dir: {TMP_DIR}, fastq, sam... files will save to it")
     seq_lst = sequence_pickup(df_gtf, fa, genelist, min_length=40)
-    # TODO: calculate specificity:
-    # 1. save all gene's all transcripts to fasta
-    #    make aligner index
-    # 2. save all sub seqs(40bp) of seq in seq_lst to fastq
-    # 3. align fastq to aligner index get sam file
-    # 4. iterate sam file, count out-of region aligns.
     if not exists(output_dir):
         os.mkdir(output_dir)
     best = []
