@@ -106,74 +106,46 @@ def code_completion(codes, code_length=6, code_unit_length=2):
     return res
 
 
-class LLHC(HuffmanCoding):
-    def __init__(self, *args, desire_depth=3, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.desire_depth = desire_depth
+def LLHC(freq, lmax):
+    I = sorted([(k, v) for k, v in freq.items()],
+               key=lambda t: t[1])
 
-    def reset_stack(self):
-        stack = []
-        def walk(node):
-            if node.is_balance():
-                stack.append(node)
-            else:
-                for c in node.childs:
-                    walk(c)
-        walk(self.tree.root)
-        stack.sort(key=lambda n: (n.weight, n.value))
-        self.tree.stack = stack
-
-    def reduce_depth(self, diff):
-        stack = self.tree.stack
-        while diff > 0:
-            n_childs = min(len(stack), len(self.code_book))
-            childs = stack[:n_childs]
-            stack = stack[n_childs:]
-            new = Node.new_with_childs(childs)
-            idx = bisect.bisect([(n.weight, n.value) for n in stack], (new.weight, new.value))
-            stack.insert(idx, new)
-            diff -= 1
-        self.tree.stack = stack
-
-    def coding(self, freq):
-        hc = HuffmanCoding(self.code_book)
-        self.tree = hc.coding(freq)
-        if len(freq) > len(self.code_book) ** self.desire_depth:
-            raise ValueError(f"Input can't coding with a {self.desire_depth} depth tree.")
-        depth_diff = self.tree.root.depth - self.desire_depth
-        if depth_diff > 0:
-            self.reset_stack()
-            self.reduce_depth(depth_diff)
-            hc.tree = self.tree
-            return hc.coding(freq, add_leaf=False)
+    def mincost(i, X, L):
+        if (X >= 2**(-lmax)) and (i <= len(I)-1):
+            vals = []; lens = []
+            for j in range(1, lmax+1):
+                c, l = mincost(i+1, X-2**(-j), L+(j,))
+                vals.append(2**j * I[i][1] + c)
+                lens.append(l)
+            minval = min(vals)
+            minidx = vals.index(minval)
+            return minval, lens[minidx]
+        elif (X == 0) and (i == len(I)):
+            return 0, L
         else:
-            return self.tree
+            return float('inf'), tuple()
+
+    return I, mincost(0, 1, tuple())
+
 
 
 if __name__ == '__main__':
-    import random
-    freq = {}
-    for i in range(1,1000) :
-        freq[f'Gene{i}'] = random.randint(1,10)
-    for i in range(1001,2100) :
-        freq[f'Gene{i}'] = random.randint(100,1000)
+    freq = [100,1,1,1,1,1,1,1,1,1,1,1,5,5]
+    freq = {f"g{i}":f for i, f in enumerate(freq)}
+    minc = LLHC(freq,4)
+    print(minc)
+    #import random
+    #freq = {}
+    #for i in range(1,1000) :
+    #    freq[f'Gene{i}'] = random.randint(1,10)
+    #for i in range(1001,2100) :
+    #    freq[f'Gene{i}'] = random.randint(100,1000)
 
-    code_book = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
-    hc = HuffmanCoding(code_book)
-    tree = hc.coding(freq)
-    codes = hc.get_codes()
-    c_codes = code_completion(codes)
+    #code_book = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
+    #hc = HuffmanCoding(code_book)
+    #tree = hc.coding(freq)
+    #codes = hc.get_codes()
+    #c_codes = code_completion(codes)
     ##print(tree.root)
     ##print(tree.root.childs)
 
-    ##llhc = LLHC(code_book, desire_depth=4)
-    ##tree_ll = llhc.coding(freq)
-    ##codes_ll = llhc.get_codes()
-    ##c_codes_ll = code_completion(codes)
-    ##print(tree_ll.root)
-    ##print(tree_ll.root.childs)
-
-    a = [1,1,1,1,1,1,1,1,1,1,5,5]
-    freq = {f"g{i}": f for i, f in enumerate(a)}
-    llhc = LLHC(['0', '1'], desire_depth=4)
-    t = llhc.coding(freq)
