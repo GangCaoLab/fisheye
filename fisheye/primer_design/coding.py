@@ -6,7 +6,7 @@ from functools import reduce
 import heapq
 
 
-class Node(object):
+class Node():
     def __init__(self, id, childs=None, weight=0, depth=0, height=0):
         self.id = id
         self.weight = weight
@@ -36,26 +36,44 @@ class Node(object):
         return new
 
 
+class Heap(object):
+    """Wrap of heapq, allow use key.
+    see: https://stackoverflow.com/a/8875823/8500469
+    """
+    def __init__(self, key=lambda x:x):
+        self.key = key
+        self.index = 0
+        self._data = []
+
+    def push(self, item):
+        heapq.heappush(self._data, (self.key(item), self.index, item))
+        self.index += 1
+
+    def pop(self):
+        return heapq.heappop(self._data)[2]
+
+    def __len__(self):
+        return len(self._data)
+
+
 class Tree(object):
     def __init__(self):
-        self.stack = []
+        self.stack = Heap(key=lambda n: (-n.depth, n.weight))
         self.leafs = set()
 
     def add_leaf(self, node):
-        self.stack.append(node)
+        self.stack.push(node)
         self.leafs.add(node)
 
     def pop_min(self, key=lambda n: n.weight):
-        min_val = min(self.stack, key=key)
-        min_idx = self.stack.index(min_val)
-        return self.stack.pop(min_idx)
+        return self.stack.pop()
 
     def push(self, node):
-        self.stack.append(node)
+        self.stack.push(node)
 
     @property
     def root(self):
-        return self.stack[-1]
+        return self.stack._data[-1][2]
 
 
 def code_completion(codes, code_length=6, code_unit_length=2):
@@ -155,7 +173,7 @@ class LLHC(object):
             n_childs = min(len(tree.stack), len(self.code_book))
             childs = []
             for _ in range(n_childs):
-                node = tree.pop_min(key=lambda n: (-n.depth, n.weight))
+                node = tree.pop_min()
                 childs.append(node)
             new = Node.new_with_childs(childs)
             tree.push(new)
@@ -174,8 +192,6 @@ class LLHC(object):
         return codes
 
 
-
-
 if __name__ == '__main__':
     #freq = [100,1,1,1,1,1,1,1,1,1,1,1,5,5]
     #freq = [1, 1, 3, 4, 8, 100]
@@ -188,10 +204,11 @@ if __name__ == '__main__':
     freq = {}
     for i in range(1,100) :
         freq[f'Gene{i}'] = random.randint(1,10)
-    for i in range(101,210) :
+    for i in range(102,1100) :
         freq[f'Gene{i}'] = random.randint(100,1000)
     cb = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
-    llhc = LLHC(cb, 3)
+    llhc = LLHC(cb, 5)
     codes = llhc.coding(freq)
-    print(codes)
+    #print(codes)
+    print(len(max(codes.values(), key=lambda c: len(c))))
 
