@@ -134,19 +134,19 @@ class LLHC(object):
     def get_nodeset(self, freq):
         L = self.L
         I = [(k, v) for k, v in freq.items()]
-        P = [set()]
+        P = [list()]
         for d in range(1, L+1):
-            P.append({Package({Item(i[0], i[1], d)}) for i in I})
+            P.append(sorted([Package({Item(i[0], i[1], d)}) for i in I],
+                            key=lambda p: p.weight))
 
         for d in range(L, 0, -1):
-            while len(P[d]) >= len(self.code_book):
-                pkgs = []
-                for i in range(len(self.code_book)):
-                    p = min(P[d], key=lambda p: p.weight)
-                    P[d].remove(p)
-                    pkgs.append(p)
+            while len(P[d]) > 1:
+                n_pkgs = min(len(self.code_book), max(len(P[d])-1, 2))
+                pkgs = P[d][:n_pkgs]
+                P[d] = P[d][n_pkgs:]
                 p_new = reduce(lambda a,b: a.merge(b), pkgs)
-                P[d-1].add(p_new)
+                idx = bisect.bisect([p.weight for p in P[d-1]], p_new.weight)
+                P[d-1].insert(idx, p_new)
 
         S = reduce(lambda a, b: a.merge(b), P[0]).set
         nodeset = sorted(S, key=lambda t: (t.name, t.d))
@@ -194,21 +194,22 @@ class LLHC(object):
 
 if __name__ == '__main__':
     #freq = [100,1,1,1,1,1,1,1,1,1,1,1,5,5]
-    #freq = [1, 1, 3, 4, 8, 100]
-    #freq = {f"g{i}":f for i, f in enumerate(freq)}
-    #llhc = LLHC(['0', '1'], 10)
+    freq = [1, 1, 3, 4, 8, 100]
+    freq = {f"g{i}":f for i, f in enumerate(freq)}
+    llhc = LLHC(['0', '1'], 10)
+    codes = llhc.coding(freq)
+    print(codes)
+
+    #import random
+    #freq = {}
+    #for i in range(1,100) :
+    #    freq[f'Gene{i}'] = random.randint(1,10)
+    #for i in range(101,200) :
+    #    freq[f'Gene{i}'] = random.randint(100,1000)
+    ##cb = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
+    #cb = ['0', '1']
+    #llhc = LLHC(cb, 10)
     #codes = llhc.coding(freq)
     #print(codes)
-
-    import random
-    freq = {}
-    for i in range(1,100) :
-        freq[f'Gene{i}'] = random.randint(1,10)
-    for i in range(102,1100) :
-        freq[f'Gene{i}'] = random.randint(100,1000)
-    cb = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
-    llhc = LLHC(cb, 5)
-    codes = llhc.coding(freq)
-    #print(codes)
-    print(len(max(codes.values(), key=lambda c: len(c))))
+    #print(len(max(codes.values(), key=lambda c: len(c))))
 
