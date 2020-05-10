@@ -5,7 +5,6 @@ import typing as t
 from functools import reduce
 import heapq
 
-
 class Node():
     def __init__(self, id, childs=None, weight=0, depth=0, height=0):
         self.id = id
@@ -34,7 +33,6 @@ class Node():
         new = Node(id_, weight=weight, childs=childs,
                    depth=depth, height=height)
         return new
-
 
 class Heap(object):
     """Wrap of heapq, allow use key.
@@ -93,7 +91,6 @@ Item = namedtuple('Item', ['name', 'weight', 'd'])
 
 
 class Package(object):
-
     def __init__(self, set_:t.Set[Item]):
         self.set = set_
 
@@ -138,7 +135,6 @@ class LLHC(object):
         for d in range(1, L+1):
             P.append(sorted([Package({Item(i[0], i[1], d)}) for i in I],
                             key=lambda p: p.weight))
-
         for d in range(L, 0, -1):
             while len(P[d]) > 1:
                 n_pkgs = min(len(self.code_book), max(len(P[d])-1, 2))
@@ -147,7 +143,6 @@ class LLHC(object):
                 p_new = reduce(lambda a,b: a.merge(b), pkgs)
                 idx = bisect.bisect([p.weight for p in P[d-1]], p_new.weight)
                 P[d-1].insert(idx, p_new)
-
         S = reduce(lambda a, b: a.merge(b), P[0]).set
         nodeset = sorted(S, key=lambda t: (t.name, t.d))
         return nodeset
@@ -162,12 +157,10 @@ class LLHC(object):
             old = i
         maxd_items.append(i)
         maxd_items.sort(key=lambda i: i.d)
-
         # create tree, init leafs
         tree = Tree()
         for i in maxd_items:
             tree.add_leaf(Node(i.name, weight=i.weight, depth=i.d))
-        
         # build tree
         while len(tree.stack) > 1:
             n_childs = min(len(tree.stack), len(self.code_book))
@@ -177,7 +170,6 @@ class LLHC(object):
                 childs.append(node)
             new = Node.new_with_childs(childs)
             tree.push(new)
-
         return tree
 
     def decode_tree(self, tree):
@@ -191,25 +183,28 @@ class LLHC(object):
         walk(tree.root)
         return codes
 
-
-if __name__ == '__main__':
-    #freq = [100,1,1,1,1,1,1,1,1,1,1,1,5,5]
-    freq = [1, 1, 3, 4, 8, 100]
-    freq = {f"g{i}":f for i, f in enumerate(freq)}
-    llhc = LLHC(['0', '1'], 10)
+def coding(genelist):
+    freq = {row['geneID']: row['value'] for _, row in genelist.iterrows()}
+    llhc = LLHC(['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC'], 3)
     codes = llhc.coding(freq)
-    print(codes)
+    for name, barcode in codes.items():
+        if len(barcode) == 6:
+            pass
+        else:
+            barcode = barcode + ''
+    return codes
 
-    #import random
-    #freq = {}
-    #for i in range(1,100) :
-    #    freq[f'Gene{i}'] = random.randint(1,10)
-    #for i in range(101,200) :
-    #    freq[f'Gene{i}'] = random.randint(100,1000)
-    ##cb = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
-    #cb = ['0', '1']
-    #llhc = LLHC(cb, 10)
-    #codes = llhc.coding(freq)
-    #print(codes)
+#if __name__ == '__main__':
+#    import random
+#    freq = {}
+#    for i in range(1,100) :
+#        freq[f'Gene{i}'] = random.randint(1,10)
+#    for i in range(101,200) :
+#        freq[f'Gene{i}'] = random.randint(100,1000)
+#    cb = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
+#    #cb = ['0', '1']
+#    llhc = LLHC(cb, 3)
+#    codes = llhc.coding(freq)
+#    print(codes)
     #print(len(max(codes.values(), key=lambda c: len(c))))
 
