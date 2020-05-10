@@ -184,7 +184,7 @@ def primer_design(name, seq, index_prefix, barcode, threads=10, min_length=40):
         tem1_re = reverse_complement(tem1)
         tem2_re = reverse_complement(tem2)
         tem3_re = reverse_complement(tem3)
-        pad_probe = tem1_re+barcode[0]+"CCAGTGCGTCTATTTAGTGGAGCCTGCAGT"+barcode[1]+tem2_re
+        pad_probe = tem1_re+barcode[0:3]+"CCAGTGCGTCTATTTAGTGGAGCCTGCAGT"+barcode[3:6]+tem2_re
         amp_probe = tem3_re+tem4+"ACTGCAGGCTCCA"
         match_pairs_pad = self_match(pad_probe)
         match_pairs_amp = self_match(amp_probe)
@@ -220,30 +220,6 @@ def build_bowtie2_index(fasta_path, index_prefix, threads=10):
     subp.check_call(["bowtie2-build", "--threads", str(threads),
                      fasta_path, index_prefix])
 
-
-
-def barcode_generator(barcode_length=3):
-
-    def random_barcode(bases="ATCG"):
-        code1 = []; code2 = []
-        for _ in range(barcode_length):
-            code1.append(random.choice(bases))
-            code2.append(random.choice(bases))
-        return ("".join(code1), "".join(code2))
-
-    barcodes = set()
-    while 1:
-        code = random_barcode()
-        if code not in barcodes:
-            yield code
-            barcodes.add(code)
-
-
-def huffman_coding_generator(barcode_length=3, stop_code="GC"):
-    """coding barcode using huffman coding"""
-    pass
-
-
 def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, output_dir="primers"):
     """
     input: genelist gtf fasta
@@ -267,16 +243,17 @@ def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, 
     if not exists(output_dir):
         os.mkdir(output_dir)
 
-    barcode_gen = barcode_generator(barcode_length)
-    best = []
-    for name, seq in seq_lst.items():
-        barcode = next(barcode_gen)
-        log.info("Designing primer for gene " + name + ":")
-        res_df = primer_design(name, seq, index_prefix, barcode, threads)
-        best.append(res_df.iloc[0, :])
-        out_path = join(output_dir, f"{name}.csv")
-        log.info("Save results to: " + out_path)
-        res_df.to_csv(out_path)
+    import fisheye.primer_design.coding
+    barcodes = coding(genelist)
+
+    for name1, seq in seq_lst.items():
+        for name2, barcode in barcodes.items():
+            log.info("Designing primer for gene " + name + ":")
+            res_df = primer_design(name, seq, index_prefix, barcode, threads)
+            best.append(res_df.iloc[0, :])
+            out_path = join(output_dir, f"{name}.csv")
+            log.info("Save results to: " + out_path)
+            res_df.to_csv(out_path)
     best = pd.DataFrame(best)
     out_path = join(output_dir, "best_primer.csv")
     log.info(f"Store best primers to: {out_path}")
