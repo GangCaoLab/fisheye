@@ -187,12 +187,8 @@ def coding(genelist):
     freq = {row['geneID']: row['value'] for _, row in genelist.iterrows()}
     llhc = LLHC(['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC'], 3)
     codes = llhc.coding(freq)
-    for name, barcode in codes.items():
-        if len(barcode) == 6:
-            pass
-        else:
-            barcode = barcode + ''
-    return codes
+    barcodes = code_completion(codes)
+    return barcodes
 
 #if __name__ == '__main__':
 #    import random

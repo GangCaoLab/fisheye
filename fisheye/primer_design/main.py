@@ -33,8 +33,7 @@ TMP_DIR = get_tmp_dir("./primer_tmp")
 
 
 def read_gene(genelist):
-    genelist = pd.read_csv(genelist,header = None, comment='#')
-    genelist.columns = ['geneID']
+    genelist = pd.read_csv(genelist,header = None, sep = '\t',comment='#')
     return genelist
 
 
@@ -64,6 +63,21 @@ def sequence_pickup(df_gtf, fa, genelist, min_length=40 ):
         seq_lst[name] = seq
     return seq_lst
 
+def barcode_generator(barcode_length=3):
+
+    def random_barcode(bases="ATCG"):
+        code1 = []; code2 = []
+        for _ in range(barcode_length):
+            code1.append(random.choice(bases))
+            code2.append(random.choice(bases))
+        return ("".join(code1), "".join(code2))
+
+    barcodes = set()
+    while 1:
+        code = random_barcode()
+        if code not in barcodes:
+            yield code
+            barcodes.add(code)
 
 def self_match(probe, min_match = 4):
     length = len(probe)
@@ -165,7 +179,7 @@ def read_align_blocks(
             yield old.query_name, old.query_sequence, alns
 
 
-def primer_design(name, seq, index_prefix, barcode, threads=10, min_length=40):
+def primer_design(name, seq, exp_val,index_prefix, barcode, threads=10, min_length=40):
     df_lst = []
     seq_len = len(seq)
     sub_seqs = []
@@ -184,7 +198,10 @@ def primer_design(name, seq, index_prefix, barcode, threads=10, min_length=40):
         tem1_re = reverse_complement(tem1)
         tem2_re = reverse_complement(tem2)
         tem3_re = reverse_complement(tem3)
-        pad_probe = tem1_re+barcode[0:3]+"CCAGTGCGTCTATTTAGTGGAGCCTGCAGT"+barcode[3:6]+tem2_re
+        if exp_val == False:
+            pad_probe = tem1_re+barcode[0] + "CCAGTGCGTCTATTTAGTGGAGCCTGCAGT"+barcode[1] + tem2_re
+        else:
+            pad_probe = tem1_re+barcode[0:3]+"CCAGTGCGTCTATTTAGTGGAGCCTGCAGT"+barcode[3:6]+tem2_re
         amp_probe = tem3_re+tem4+"ACTGCAGGCTCCA"
         match_pairs_pad = self_match(pad_probe)
         match_pairs_amp = self_match(amp_probe)
@@ -211,7 +228,7 @@ def primer_design(name, seq, index_prefix, barcode, threads=10, min_length=40):
              df['RNAfold_score'] * weight_df['RNAfold_score'].iloc[0] + \
              df['n_mapped_genes'] * weight_df['n_mapped_genes'].iloc[0]
     df['score'] = scores
-    df.sort_values('score', inplace=True)
+    df.sort_values(by=['tm_region', 'RNAfold_score','n_mapped_genes'],inplace = True)
     df = df.reset_index(drop=True)
     return df
 
@@ -220,22 +237,35 @@ def build_bowtie2_index(fasta_path, index_prefix, threads=10):
     subp.check_call(["bowtie2-build", "--threads", str(threads),
                      fasta_path, index_prefix])
 
-def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, output_dir="primers"):
+def main(genelist, gtf, fasta, exp_val = False,barcode_length=3, threads=10, index_prefix=None, output_dir="primers"):
     """
     input: genelist gtf fasta
+    parameters:
+    exp_val: you can submit a genelist with expression value,
+             and barcodes will be designd by huffman coding.(the default is Fasle)
     output: results/{gene}.csv
     """
     if index_prefix is None:
         log.info("No bowtie2 index input, will build it.")
         from fisheye.primer_design.extract_tran_seq import extract_trans_seqs
-        trans_fasta_path = f"{TMP_DIR}/index.fa"
+        trans_fasta_path = f"{TMP_DIR}/transcript.fa"
         extract_trans_seqs(gtf, fasta, trans_fasta_path)
-        index_prefix = f"{TMP_DIR}/index"
+        index_prefix = f"{TMP_DIR}/transcript"
         build_bowtie2_index(trans_fasta_path, index_prefix, threads)
 
     fa = Fasta(fasta)
-    log.info("Reading gtf: " + gtf)
     genelist = read_gene(genelist)
+    if exp_val == False:
+        genelist.columns = ['geneID']
+        barcode_gen = barcode_generator(barcode_length)
+        log.info("random coding")
+    else:
+        genelist.columns = ['geneID','value']
+        from fisheye.primer_design.coding import coding
+        barcodes = coding(genelist)
+        log.info("huffman coding")
+
+    log.info("Reading gtf: " + gtf)
     df_gtf = read_gtf(gtf)
     log.info("pickup seqences..")
     log.info(f"Create tmp dir: {TMP_DIR}, fastq, sam... files will save to it")
@@ -243,17 +273,18 @@ def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, 
     if not exists(output_dir):
         os.mkdir(output_dir)
 
-    import fisheye.primer_design.coding
-    barcodes = coding(genelist)
-
-    for name1, seq in seq_lst.items():
-        for name2, barcode in barcodes.items():
-            log.info("Designing primer for gene " + name + ":")
-            res_df = primer_design(name, seq, index_prefix, barcode, threads)
-            best.append(res_df.iloc[0, :])
-            out_path = join(output_dir, f"{name}.csv")
-            log.info("Save results to: " + out_path)
-            res_df.to_csv(out_path)
+    best = []
+    for name, seq in seq_lst.items():
+        if exp_val == False:
+            barcode = next(barcode_gen)
+        else:
+            barcode = barcodes[name]
+        log.info("Designing primer for gene " + name + ":")
+        res_df = primer_design(name, seq, exp_val, index_prefix, barcode, threads)
+        best.append(res_df.iloc[0, :])
+        out_path = join(output_dir, f"{name}.csv")
+        log.info("Save results to: " + out_path)
+        res_df.to_csv(out_path)
     best = pd.DataFrame(best)
     out_path = join(output_dir, "best_primer.csv")
     log.info(f"Store best primers to: {out_path}")
