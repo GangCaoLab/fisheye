@@ -84,7 +84,6 @@ def self_match(probe, min_match = 4):
     return match_pairs
 
 
-
 def write_fastq(gene, seqs):
     fq = f'{TMP_DIR}/{gene}.fq'
     with open(fq, 'w') as f:
@@ -231,19 +230,23 @@ def build_bowtie2_index(fasta_path, index_prefix, threads=10, log_file=f"{TMP_DI
 def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, output_dir="primers"):
     """
     input: genelist gtf fasta
+    parameters:
+    exp_val: you can submit a genelist with expression value,
+             and barcodes will be designd by huffman coding.(the default is Fasle)
     output: results/{gene}.csv
     """
     if index_prefix is None:
         log.info("No bowtie2 index input, will build it.")
         from fisheye.primer_design.extract_tran_seq import extract_trans_seqs
-        trans_fasta_path = f"{TMP_DIR}/index.fa"
+        trans_fasta_path = f"{TMP_DIR}/transcript.fa"
         extract_trans_seqs(gtf, fasta, trans_fasta_path)
-        index_prefix = f"{TMP_DIR}/index"
+        index_prefix = f"{TMP_DIR}/transcript"
         build_bowtie2_index(trans_fasta_path, index_prefix, threads)
 
     fa = Fasta(fasta)
-    log.info("Reading gtf: " + gtf)
     genelist = read_gene(genelist)
+
+    log.info("Reading gtf: " + gtf)
     df_gtf = read_gtf(gtf)
     log.info("pickup seqences..")
     log.info(f"Create tmp dir: {TMP_DIR}, fastq, sam... files will save to it")

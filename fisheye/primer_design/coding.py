@@ -231,7 +231,7 @@ def coding_random(genelist, barcode_length, code_book=CODE_BOOK):
     unit_len = len(code_book[0])
     code_length = barcode_length * unit_len
     compiled, ori_len = code_completion(codes, code_length, unit_len)
-    return codes, ori_len
+    return compiled, ori_len
 
 
 if __name__ == '__main__':
@@ -247,4 +247,3 @@ if __name__ == '__main__':
     codes = llhc.coding(freq)
     print(codes)
     print(len(max(codes.values(), key=lambda c: len(c))))
-
