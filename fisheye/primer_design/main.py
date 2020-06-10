@@ -15,6 +15,7 @@ import subprocess as subp
 import pysam
 from fisheye.utils import get_logger
 from fisheye.utils import reverse_complement
+from fisheye.primer_design.coding import coding_llhc, coding_random
 
 
 log = get_logger(__name__)
@@ -33,8 +34,12 @@ TMP_DIR = get_tmp_dir("./primer_tmp")
 
 
 def read_gene(genelist):
-    genelist = pd.read_csv(genelist,header = None, comment='#')
-    genelist.columns = ['geneID']
+    genelist = pd.read_csv(genelist, header=None, comment='#')
+    if genelist.shape[1] == 1:
+        genelist.columns = ['geneID']
+    else:
+        genelist = genelist.iloc[:, :2]
+        genelist.columns = ['geneID', 'score']
     return genelist
 
 
@@ -47,6 +52,7 @@ def read_gtf(gtf):
 
 
 def sequence_pickup(df_gtf, fa, genelist, min_length=40 ):
+    """Pickup most represented cds"""
     seq_lst = {}
     for item in genelist.iterrows():
         name = item[1]['geneID']
@@ -78,34 +84,6 @@ def self_match(probe, min_match = 4):
     return match_pairs
 
 
-def cal_weight(df):
-    x = df.apply(lambda x: ((x - np.min(x)) / (np.max(x) - np.min(x))))
-    rows = x.index.size
-    cols = x.columns.size
-    k = 1.0 / math.log(rows)
-    lnf = [[None] * cols for i in range(rows)]
-    x = array(x)
-    lnf = [[None] * cols for i in range(rows)]
-    lnf = array(lnf)
-    for i in range(0, rows):
-        for j in range(0, cols):
-            if x[i][j] == 0:
-                lnfij = 0.0
-            else:
-                p = x[i][j] / x.sum(axis=0)[j]
-                lnfij = math.log(p) * p * (-k)
-            lnf[i][j] = lnfij
-    lnf = pd.DataFrame(lnf)
-    E = lnf
-    d = 1 - E.sum(axis=0)
-    w = [[None] * 1 for i in range(cols)]
-    for j in range(0, cols):
-        wj = d[j] / sum(d)
-        w[j] = wj
-    w = pd.DataFrame(w).T
-    w.columns = list(df.columns)
-    return w
-
 
 def write_fastq(gene, seqs):
     fq = f'{TMP_DIR}/{gene}.fq'
@@ -122,7 +100,7 @@ def align_se_sen(fq_path: str,
                  index: str,
                  sam_path: str,
                  threads: int = 10,
-                 log: t.Optional[str] = 'bowtie2.log',
+                 log_file: t.Optional[str] = 'bowtie2.log',
                  header: bool = True,
                  ) -> str:
     cmd = ["bowtie2", "-x", index, "-U", fq_path]
@@ -132,8 +110,9 @@ def align_se_sen(fq_path: str,
     cmd += ["-p", str(threads)]
     cmd += ["-S", sam_path]
     cmd = " ".join(cmd)
-    if log:
-        cmd += f" 2> {log}"
+    if log_file:
+        cmd += f" > {log_file} 2>&1"
+    log.info(f"Call cmd: {cmd}")
     subp.check_call(cmd, shell=True)
     return sam_path
 
@@ -165,60 +144,89 @@ def read_align_blocks(
             yield old.query_name, old.query_sequence, alns
 
 
-def primer_design(name, seq, index_prefix, barcode, threads=10, min_length=40):
-    df_lst = []
-    seq_len = len(seq)
-    sub_seqs = []
-    for i in range(0,len(seq)-min_length+1):
-        tem = seq[i:min_length+i]
-        sub_seqs.append(tem)
-        fold_score = round(RNA.fold_compound(tem).mfe()[1],2)
-        tem1 = tem[0:13]
-        tem2 = tem[13:26]
-        tem3 = tem[27:40]
-        tem4 = tem[26]
-        tm1 = primer3.calcTm(tem1)
-        tm2 = primer3.calcTm(tem2)
-        tm3 = primer3.calcTm(tem3)
-        region = max(tm1,tm2,tm3) - min(tm1,tm2,tm3)
-        tem1_re = reverse_complement(tem1)
-        tem2_re = reverse_complement(tem2)
-        tem3_re = reverse_complement(tem3)
-        pad_probe = tem1_re+barcode[0:3]+"CCAGTGCGTCTATTTAGTGGAGCCTGCAGT"+barcode[3:6]+tem2_re
-        amp_probe = tem3_re+tem4+"ACTGCAGGCTCCA"
-        match_pairs_pad = self_match(pad_probe)
-        match_pairs_amp = self_match(amp_probe)
-        df_lst.append([match_pairs_pad, match_pairs_amp, region, tm1, tm2, tm3, fold_score, pad_probe, amp_probe])
-
-
+def count_n_aligned_genes(sub_seqs, name, index_prefix, threads):
     fq_path = write_fastq(name, sub_seqs)
     sam_path = align_se_sen(fq_path, index_prefix,
                             f"{TMP_DIR}/{name}.sam", threads=threads,
-                            log=f"{TMP_DIR}/{name}.bowtie2.log")
+                            log_file=f"{TMP_DIR}/{name}.bowtie2.log")
     n_mapped_genes = []
     for _, _, alns in read_align_blocks(sam_path):
         n_genes = len(set([chr_.split("_")[0] for chr_, s, e in alns]))
         n_mapped_genes.append(n_genes)
+    return n_mapped_genes
 
-    df = pd.DataFrame(df_lst)
-    df.columns = ['point1', 'point2', 'tm_region', 'tm1', 'tm2', 'tm3', 'RNAfold_score', 'primer1', 'primer2']
+
+def get_sub_seq_params(tem, whole_fold, barcode):
+    # small is better, means RNA more unlikely to fold
+    target_fold_score = -RNA.fold_compound(tem).mfe()[1]
+    tem1 = tem[0:13]
+    tem2 = tem[13:26]
+    tem3 = tem[27:40]
+    tem4 = tem[26]
+    tm1 = primer3.calcTm(tem1)
+    tm2 = primer3.calcTm(tem2)
+    tm3 = primer3.calcTm(tem3)
+    region = max(tm1,tm2,tm3) - min(tm1,tm2,tm3)
+    tem1_re = reverse_complement(tem1)
+    tem2_re = reverse_complement(tem2)
+    tem3_re = reverse_complement(tem3)
+    pad_probe = tem1_re+"CC"+barcode[0:3]+"TGCGTCTATTTGT"+barcode[3:6]+"TAGTGGAGCCT"+tem2_re
+    amp_probe = tem3_re+tem4+"AGGCTCCACTA"
+    match_pairs_pad = self_match(pad_probe)
+    match_pairs_amp = self_match(amp_probe)
+    pad_fold_score = -RNA.fold_compound(pad_probe).mfe()[1]
+    amp_fold_score = -RNA.fold_compound(amp_probe).mfe()[1]
+    target_blocks = len(whole_fold[0]) - whole_fold[0].count('.')  # smaller is better
+    return [
+        pad_fold_score, amp_fold_score,
+        match_pairs_pad, match_pairs_amp,
+        region, tm1, tm2, tm3,
+        target_fold_score, target_blocks,
+        pad_probe, amp_probe
+    ]
+
+
+def primer_design(name, seq, index_prefix, barcode, ori_len, threads=10, min_length=40):
+    """Design primers for one gene"""
+    df_rows = []
+    seq_len = len(seq)
+    sub_seqs = []
+    whole_fold = RNA.fold_compound(seq).mfe()
+    for i in range(0,len(seq)-min_length+1):
+        tem = seq[i:min_length+i]
+        sub_seqs.append(tem)
+        params = get_sub_seq_params(tem, whole_fold, barcode)
+        row = params + [barcode, ori_len]
+        df_rows.append(row)
+
+    df = pd.DataFrame(df_rows)
+    df.columns = ['pad_fold_score', 'amp_fold_score',
+                  'self_match_pad', 'self_match_amp', 
+                  'tm_region', 'tm1', 'tm2', 'tm3',
+                  'target_fold_score', 'target_blocks',
+                  'primer_pad', 'primer_amp',
+                  'barcode', 'ori_len']
+    n_mapped_genes = count_n_aligned_genes(sub_seqs, name, index_prefix, threads)
     df['n_mapped_genes'] = n_mapped_genes
 
-    weight_df = cal_weight(df[['point1','point2','tm_region','RNAfold_score','n_mapped_genes']])
-    scores = df['point1'] * weight_df['point1'].iloc[0] +\
-             df['point2'] * weight_df['point2'].iloc[0] +\
-             df['tm_region'] * weight_df['tm_region'].iloc[0] +\
-             df['RNAfold_score'] * weight_df['RNAfold_score'].iloc[0] + \
-             df['n_mapped_genes'] * weight_df['n_mapped_genes'].iloc[0]
-    df['score'] = scores
-    df.sort_values('score', inplace=True)
+    df.sort_values(['n_mapped_genes',
+                    'pad_fold_score', 'self_match_pad',
+                    'amp_fold_score', 'self_match_amp',
+                    'target_blocks', 'target_fold_score',
+                    'tm_region'],
+                   inplace=True)
     df = df.reset_index(drop=True)
     return df
 
 
-def build_bowtie2_index(fasta_path, index_prefix, threads=10):
-    subp.check_call(["bowtie2-build", "--threads", str(threads),
-                     fasta_path, index_prefix])
+def build_bowtie2_index(fasta_path, index_prefix, threads=10, log_file=f"{TMP_DIR}/build.bowtie2.log"):
+    cmd = ["bowtie2-build", "--threads", str(threads), fasta_path, index_prefix]
+    if log_file:
+        cmd += [f' > {log_file} 2>&1']
+    cmd = " ".join(cmd)
+    log.info(f"Call cmd: {cmd}")
+    subp.check_call(cmd, shell=True)
+
 
 def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, output_dir="primers"):
     """
@@ -243,18 +251,18 @@ def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, 
     if not exists(output_dir):
         os.mkdir(output_dir)
 
-    import fisheye.primer_design.coding
-    barcodes = coding(genelist)
+    coding_func = coding_llhc if 'score' in genelist.columns else coding_random
+    barcodes, ori_lens = coding_func(genelist, barcode_length)
 
-    for name1, seq in seq_lst.items():
-        for name2, barcode in barcodes.items():
-            log.info("Designing primer for gene " + name + ":")
-            res_df = primer_design(name, seq, index_prefix, barcode, threads)
-            best.append(res_df.iloc[0, :])
-            out_path = join(output_dir, f"{name}.csv")
-            log.info("Save results to: " + out_path)
-            res_df.to_csv(out_path)
-    best = pd.DataFrame(best)
+    best_rows = []
+    for name, seq in seq_lst.items():
+        log.info("Designing primer for gene " + name + ":")
+        res_df = primer_design(name, seq, index_prefix, barcodes[name], ori_lens[name], threads)
+        best_rows.append(res_df.iloc[0, :])
+        out_path = join(output_dir, f"{name}.csv")
+        log.info("Save results to: " + out_path)
+        res_df.to_csv(out_path)
+    best = pd.DataFrame(best_rows)
     out_path = join(output_dir, "best_primer.csv")
     log.info(f"Store best primers to: {out_path}")
     best.to_csv(out_path, index=False)

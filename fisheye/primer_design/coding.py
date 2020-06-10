@@ -76,15 +76,17 @@ class Tree(object):
 
 def code_completion(codes, code_length=6, code_unit_length=2):
     res = {}
+    ori_lens = {}
     for gene, code in codes.items():
         c_len = len(code)
+        ori_lens[gene] = c_len
         if c_len < code_length:
             len_diff = code_length - c_len
             suffix = code[-code_unit_length:] * (len_diff//code_unit_length)
             res[gene] = code + suffix
         else:
             res[gene] = code
-    return res
+    return res, ori_lens
 
 
 Item = namedtuple('Item', ['name', 'weight', 'd'])
@@ -183,28 +185,66 @@ class LLHC(object):
         walk(tree.root)
         return codes
 
-def coding(genelist):
-    freq = {row['geneID']: row['value'] for _, row in genelist.iterrows()}
-    llhc = LLHC(['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC'], 3)
+
+CODE_BOOK = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
+CODE_BOOK = ["".join(sorted(c)) for c in CODE_BOOK]
+
+
+def coding_llhc(genelist, barcode_length, code_book=CODE_BOOK):
+    freq = {row['geneID']: row['score'] for _, row in genelist.iterrows()}
+    llhc = LLHC(CODE_BOOK, barcode_length)
     codes = llhc.coding(freq)
-    for name, barcode in codes.items():
-        if len(barcode) == 6:
-            pass
+    unit_len = len(code_book[0])
+    code_length = barcode_length * unit_len
+    compiled, ori_lens = code_completion(codes, code_length, unit_len)
+    return compiled, ori_lens
+
+
+import random
+
+def gen_all_codes(length, code_book):
+    codes = []
+    def t(i=0, code=""):
+        if i < length:
+            for c in code_book:
+                t(i+1, code+c)
         else:
-            barcode = barcode + ''
+            codes.append(code)
+    t()
     return codes
 
-#if __name__ == '__main__':
-#    import random
-#    freq = {}
-#    for i in range(1,100) :
-#        freq[f'Gene{i}'] = random.randint(1,10)
-#    for i in range(101,200) :
-#        freq[f'Gene{i}'] = random.randint(100,1000)
-#    cb = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
-#    #cb = ['0', '1']
-#    llhc = LLHC(cb, 3)
-#    codes = llhc.coding(freq)
-#    print(codes)
-    #print(len(max(codes.values(), key=lambda c: len(c))))
+def coding_random(genelist, barcode_length, code_book=CODE_BOOK):
+    min_len = 1
+    for min_len in range(1, barcode_length+1):
+        if len(code_book) ** min_len > genelist.shape[0]:
+            break
+    else:
+        raise ValueError(f"Input(size={len(freq)}) can't encode with a {self.L} depth " + \
+                         f"{len(self.code_book)}-branch coding tree.")
+
+    codes_ = gen_all_codes(min_len, code_book)
+    random.shuffle(codes_)
+
+    codes = {}
+    for i, (_, row) in enumerate(genelist.iterrows()):
+        codes[row['geneID']] = codes_[i]
+    unit_len = len(code_book[0])
+    code_length = barcode_length * unit_len
+    compiled, ori_len = code_completion(codes, code_length, unit_len)
+    return codes, ori_len
+
+
+if __name__ == '__main__':
+    import random
+    freq = {}
+    for i in range(1,100) :
+        freq[f'Gene{i}'] = random.randint(1,10)
+    for i in range(101,200) :
+        freq[f'Gene{i}'] = random.randint(100,1000)
+    cb = ['AA','AT','AG','AC','TT','TG','TC','GG','CG','CC']
+    #cb = ['0', '1']
+    llhc = LLHC(cb, 3)
+    codes = llhc.coding(freq)
+    print(codes)
+    print(len(max(codes.values(), key=lambda c: len(c))))
 
