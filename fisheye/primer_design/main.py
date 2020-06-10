@@ -57,14 +57,16 @@ def sequence_pickup(df_gtf, fa, genelist, min_length=40 ):
     for item in genelist.iterrows():
         name = item[1]['geneID']
         df_gene = df_gtf[df_gtf.gene_name == name]
+        if df_gene.shape[0] <= 0:
+            raise ValueError(f"Gene {name} not exists in GTF file.")
         df_cds = df_gene[df_gene.type == 'CDS'].copy()
         df_cds = df_cds[df_cds.length > min_length]
         cds_cnts = df_cds.groupby(by=['chr', 'start', 'end', "length", "strand"], as_index=False).count()
         cnts_max = cds_cnts[cds_cnts['type'] == cds_cnts['type'].max()]
         cds_select = cnts_max[cnts_max['length'] == cnts_max['length'].max()]
-        chr_, start, end, strand = cds_select.iloc[0].chr, cds_select.iloc[0].start, cds_select.iloc[0].end, \
-                                   cds_select.iloc[0].strand
-        seq = fa[chr_][start:end].seq
+        row_ = cds_select.iloc[0]
+        chr_, start, end, strand = row_.chr, row_.start, row_.end, row_.strand
+        seq = fa[str(chr_)][start:end].seq
         if strand == '-':
             seq = reverse_complement(seq)
         seq_lst[name] = seq
@@ -124,7 +126,7 @@ def read_align_blocks(
         sam_path: str
         ) -> t.Iterable[Block]:
     def yield_cond(old, rec, block, end=False):
-        res = (old is not None) and (len(block) > 0)
+        res = (old is not None)
         if res and not end:
             res &= rec.query_name != old.query_name
         return res
