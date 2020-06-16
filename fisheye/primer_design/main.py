@@ -60,6 +60,10 @@ def sequence_pickup(df_gtf, fa, genelist, min_length=40 ):
         if df_gene.shape[0] <= 0:
             raise ValueError(f"Gene {name} not exists in GTF file.")
         df_cds = df_gene[df_gene.type == 'CDS'].copy()
+        if df_cds.shape[0] == 0:
+            df_cds = df_gene[df_gene.type == 'exon'].copy()
+            if df_cds.shape[0] == 0:
+                raise ValueError(f"Gene {name} can't found any CDS or exon records.")
         df_cds = df_cds[df_cds.length > min_length]
         cds_cnts = df_cds.groupby(by=['chr', 'start', 'end', "length", "strand"], as_index=False).count()
         cnts_max = cds_cnts[cds_cnts['type'] == cds_cnts['type'].max()]
@@ -157,7 +161,7 @@ def count_n_aligned_genes(sub_seqs, name, index_prefix, threads):
     return n_mapped_genes
 
 
-def get_sub_seq_params(tem, whole_fold, barcode):
+def get_sub_seq_params(tem, idx, whole_fold, barcode):
     # small is better, means RNA more unlikely to fold
     target_fold_score = -RNA.fold_compound(tem).mfe()[1]
     tem1 = tem[0:13]
@@ -178,9 +182,10 @@ def get_sub_seq_params(tem, whole_fold, barcode):
     match_pairs_amp = self_match(amp_probe)
     pad_fold_score = -RNA.fold_compound(pad_probe).mfe()[1]
     amp_fold_score = -RNA.fold_compound(amp_probe).mfe()[1]
-    target_blocks = len(whole_fold[0]) - whole_fold[0].count('.')  # smaller is better
+    target_fold = whole_fold[0][idx:idx+len(tem)]
+    target_blocks = len(target_fold) - target_fold.count('.')  # smaller is better
     return [
-        pad_fold_score, amp_fold_score,
+        idx, pad_fold_score, amp_fold_score,
         match_pairs_pad, match_pairs_amp,
         region, tm1, tm2, tm3,
         target_fold_score, target_blocks,
@@ -197,12 +202,12 @@ def primer_design(name, seq, index_prefix, barcode, ori_len, threads=10, min_len
     for i in range(0,len(seq)-min_length+1):
         tem = seq[i:min_length+i]
         sub_seqs.append(tem)
-        params = get_sub_seq_params(tem, whole_fold, barcode)
+        params = get_sub_seq_params(tem, i, whole_fold, barcode)
         row = params + [split_barcode(barcode), ori_len]
         df_rows.append(row)
 
     df = pd.DataFrame(df_rows)
-    df.columns = ['pad_fold_score', 'amp_fold_score',
+    df.columns = ['offset', 'pad_fold_score', 'amp_fold_score',
                   'self_match_pad', 'self_match_amp', 
                   'tm_region', 'tm1', 'tm2', 'tm3',
                   'target_fold_score', 'target_blocks',
@@ -305,7 +310,7 @@ def main(genelist, gtf, fasta,
         coding_func = coding_llhc if 'score' in genelist.columns else coding_random
         barcodes, ori_lens = coding_func(genelist, barcode_length)
     else:
-        log.info("Consider exisiting barcodes in path: {existing_codes}")
+        log.info(f"Consider exisiting barcodes in path: {existing_codes}")
         if 'score' in genelist.columns:
             log.warning("Ignore score of genelist, due to existing barcodes.")
         existing_codes = read_existing_codes(existing_codes)
