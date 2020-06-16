@@ -171,7 +171,8 @@ def get_sub_seq_params(tem, whole_fold, barcode):
     tem1_re = reverse_complement(tem1)
     tem2_re = reverse_complement(tem2)
     tem3_re = reverse_complement(tem3)
-    pad_probe = tem1_re+"CC"+barcode[0:3]+"TGCGTCTATTTGT"+barcode[3:6]+"TAGTGGAGCCT"+tem2_re
+    code1, code2 = split_barcode(barcode).split(" ")
+    pad_probe = tem1_re+"CC"+code1+"TGCGTCTATTTGT"+code2+"TAGTGGAGCCT"+tem2_re
     amp_probe = tem3_re+tem4+"AGGCTCCACTA"
     match_pairs_pad = self_match(pad_probe)
     match_pairs_amp = self_match(amp_probe)
@@ -197,7 +198,7 @@ def primer_design(name, seq, index_prefix, barcode, ori_len, threads=10, min_len
         tem = seq[i:min_length+i]
         sub_seqs.append(tem)
         params = get_sub_seq_params(tem, whole_fold, barcode)
-        row = params + [barcode, ori_len]
+        row = params + [split_barcode(barcode), ori_len]
         df_rows.append(row)
 
     df = pd.DataFrame(df_rows)
@@ -229,13 +230,57 @@ def build_bowtie2_index(fasta_path, index_prefix, threads=10, log_file=f"{TMP_DI
     subp.check_call(cmd, shell=True)
 
 
-def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, output_dir="primers"):
+def split_barcode(barcode):
+    """
+    Split ordered barcode to insert shape.
+    ATGTCG -> CGA GGT
+    """
+    code1 = []; code2 = []
+    for i in range(0, len(barcode), 2):
+        c1, c2 = sorted([barcode[i], barcode[i+1]])
+        code1.append(c1)
+        code2.append(c2)
+    code1.reverse(); code2.reverse()
+    barcode_ins = " ".join([''.join(code1), ''.join(code2)])
+    return barcode_ins
+
+def parse_barcode(barcode_ins):
+    """
+    Parse insert shape barcode to ordered.
+    CGA GGT -> ATGTCG
+    """
+    code1, code2 = barcode_ins.split(" ")
+    code = []
+    assert len(code1) == len(code2)
+    for i in range(len(code1)-1, -1, -1):
+        code.append("".join(sorted([code1[i],code2[i]])))
+    barcode = "".join(code)
+    return barcode
+
+def read_existing_codes(path):
+    codes = set()
+    with open(path) as f:
+        for line in f:
+            code = line.strip()
+            if " " in code:
+                code = parse_barcode(code)
+            codes.add(code)
+    return codes
+
+
+def main(genelist, gtf, fasta,
+         barcode_length=3, threads=10,
+         index_prefix=None,
+         existing_codes=None,
+         output_dir="primers"):
     """
     input: genelist gtf fasta
     parameters:
-    exp_val: you can submit a genelist with expression value,
-             and barcodes will be designd by huffman coding.(the default is Fasle)
-    output: results/{gene}.csv
+        barcode_length: Length of barcode.
+        threads: Number of threads for bowtie2 align.
+        index_prefix: Index prefix for bowtie2 align.
+        existing_codes: Path to list of existing barcodes.
+    output: output_dir
     """
     if index_prefix is None:
         log.info("No bowtie2 index input, will build it.")
@@ -256,8 +301,15 @@ def main(genelist, gtf, fasta, barcode_length=3, threads=10, index_prefix=None, 
     if not exists(output_dir):
         os.mkdir(output_dir)
 
-    coding_func = coding_llhc if 'score' in genelist.columns else coding_random
-    barcodes, ori_lens = coding_func(genelist, barcode_length)
+    if existing_codes is None:
+        coding_func = coding_llhc if 'score' in genelist.columns else coding_random
+        barcodes, ori_lens = coding_func(genelist, barcode_length)
+    else:
+        log.info("Consider exisiting barcodes in path: {existing_codes}")
+        if 'score' in genelist.columns:
+            log.warning("Ignore score of genelist, due to existing barcodes.")
+        existing_codes = read_existing_codes(existing_codes)
+        barcodes, ori_lens = coding_random(genelist, barcode_length, existing_codes=existing_codes)
 
     best_rows = []
     for name, seq in seq_lst.items():

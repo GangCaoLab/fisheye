@@ -213,16 +213,21 @@ def gen_all_codes(length, code_book):
     t()
     return codes
 
-def coding_random(genelist, barcode_length, code_book=CODE_BOOK):
+def coding_random(genelist, barcode_length, code_book=CODE_BOOK, existing_codes=None):
+    if not existing_codes:
+        existing_codes = set()
+
     min_len = 1
     for min_len in range(1, barcode_length+1):
-        if len(code_book) ** min_len > genelist.shape[0]:
+        if (len(code_book) ** min_len) - len(existing_codes) > genelist.shape[0]:
             break
     else:
         raise ValueError(f"Input(size={len(freq)}) can't encode with a {self.L} depth " + \
-                         f"{len(self.code_book)}-branch coding tree.")
+                         f"{len(self.code_book)}-branch coding tree." + \
+                         f"(with {len(existing_codes)} existing codes.)")
 
     codes_ = gen_all_codes(min_len, code_book)
+    codes_ = list(set(codes_) - set(existing_codes))
     random.shuffle(codes_)
 
     codes = {}
