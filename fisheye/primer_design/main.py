@@ -13,6 +13,7 @@ import glob
 import typing as t
 import subprocess as subp
 import pysam
+from pathos.pools import ProcessPool
 from fisheye.utils import get_logger
 from fisheye.utils import reverse_complement
 from fisheye.primer_design.coding import coding_llhc, coding_random
@@ -51,30 +52,35 @@ def read_gtf(gtf):
     return df
 
 
-def sequence_pickup(df_gtf, fa, genelist, min_length=40 ):
-    """Pickup most represented cds"""
-    seq_lst = {}
+Exon = t.Tuple[str, str, int]  # (name, seq, n_trans)
+
+
+def extract_exons(df_gtf: pd.DataFrame, fa: Fasta,
+                  genelist: pd.DataFrame, min_length: int=40
+                  ) -> t.Mapping[str, t.List[Exon]]:
+    """Extract all exons of each gene"""
+    gene2exons = {}
     for item in genelist.iterrows():
-        name = item[1]['geneID']
-        df_gene = df_gtf[df_gtf.gene_name == name]
+        gene = item[1]['geneID']
+        df_gene = df_gtf[df_gtf.gene_name == gene]
         if df_gene.shape[0] <= 0:
-            raise ValueError(f"Gene {name} not exists in GTF file.")
-        df_cds = df_gene[df_gene.type == 'CDS'].copy()
-        if df_cds.shape[0] == 0:
-            df_cds = df_gene[df_gene.type == 'exon'].copy()
-            if df_cds.shape[0] == 0:
-                raise ValueError(f"Gene {name} can't found any CDS or exon records.")
-        df_cds = df_cds[df_cds.length > min_length]
-        cds_cnts = df_cds.groupby(by=['chr', 'start', 'end', "length", "strand"], as_index=False).count()
-        cnts_max = cds_cnts[cds_cnts['type'] == cds_cnts['type'].max()]
-        cds_select = cnts_max[cnts_max['length'] == cnts_max['length'].max()]
-        row_ = cds_select.iloc[0]
-        chr_, start, end, strand = row_.chr, row_.start, row_.end, row_.strand
-        seq = fa[str(chr_)][start:end].seq
-        if strand == '-':
-            seq = reverse_complement(seq)
-        seq_lst[name] = seq
-    return seq_lst
+            raise ValueError(f"Gene {gene} not exists in GTF file.")
+        df_exons = df_gene[df_gene.type == 'exon'].copy()
+        df_exons = df_exons[df_exons.length > min_length]
+        if df_exons.shape[0] == 0:
+            raise ValueError(f"Gene {gene} can't found any exon records.")
+        exon_cnts = df_exons.groupby(by=['chr', 'start', 'end', "length", "strand"], as_index=False).count()
+        gene2exons[gene] = []
+        for idx, row in exon_cnts.iterrows():
+            chr_, start, end, strand = str(row['chr']), row['start'], row['end'], row['strand']
+            name = '_'.join([chr_, str(start), str(end), strand])
+            n_trans = row['type']
+            seq = fa[chr_][start:end].seq.upper()
+            if strand == '-':
+                seq = reverse_complement(seq)
+            exon = (name, seq, n_trans)
+            gene2exons[gene].append(exon)
+    return gene2exons
 
 
 def self_match(probe, min_match = 4):
@@ -137,6 +143,7 @@ def read_align_blocks(
     with pysam.AlignmentFile(sam_path, mode='r') as sam:
         alns = []
         old = None
+        rec = None
         for rec in sam.fetch():
             aln = rec.reference_name, rec.reference_start, rec.reference_end
             if yield_cond(old, rec, alns):
@@ -145,7 +152,7 @@ def read_align_blocks(
             if aln[0] is not None:
                 alns.append(aln)
             old = rec
-        if yield_cond(old, rec, alns, end=True):
+        if (rec is not None) and yield_cond(old, rec, alns, end=True):
             yield old.query_name, old.query_sequence, alns
 
 
@@ -161,7 +168,7 @@ def count_n_aligned_genes(sub_seqs, name, index_prefix, threads):
     return n_mapped_genes
 
 
-def get_sub_seq_params(tem, idx, whole_fold, barcode):
+def get_sub_seq_params(tem, offset, whole_fold, barcode):
     # small is better, means RNA more unlikely to fold
     target_fold_score = -RNA.fold_compound(tem).mfe()[1]
     tem1 = tem[0:13]
@@ -182,10 +189,10 @@ def get_sub_seq_params(tem, idx, whole_fold, barcode):
     match_pairs_amp = self_match(amp_probe)
     pad_fold_score = -RNA.fold_compound(pad_probe).mfe()[1]
     amp_fold_score = -RNA.fold_compound(amp_probe).mfe()[1]
-    target_fold = whole_fold[0][idx:idx+len(tem)]
+    target_fold = whole_fold[0][offset:offset+len(tem)]
     target_blocks = len(target_fold) - target_fold.count('.')  # smaller is better
     return [
-        idx, pad_fold_score, amp_fold_score,
+        offset, pad_fold_score, amp_fold_score,
         match_pairs_pad, match_pairs_amp,
         region, tm1, tm2, tm3,
         target_fold_score, target_blocks,
@@ -193,21 +200,33 @@ def get_sub_seq_params(tem, idx, whole_fold, barcode):
     ]
 
 
-def primer_design(name, seq, index_prefix, barcode, ori_len, threads=10, min_length=40):
+def primer_design(name, exons, index_prefix, barcode, ori_len, threads=10, min_length=40):
     """Design primers for one gene"""
     df_rows = []
-    seq_len = len(seq)
     sub_seqs = []
-    whole_fold = RNA.fold_compound(seq).mfe()
-    for i in range(0,len(seq)-min_length+1):
-        tem = seq[i:min_length+i]
-        sub_seqs.append(tem)
-        params = get_sub_seq_params(tem, i, whole_fold, barcode)
-        row = params + [split_barcode(barcode), ori_len]
-        df_rows.append(row)
+    pool = ProcessPool(ncpus=threads)
+    map_ = map if threads <= 1 else pool.map
+
+    def process_(exon):
+        exon_name, seq, n_trans = exon
+        seq_len = len(seq)
+        whole_fold = RNA.fold_compound(seq).mfe()
+        seqs = []; rows = []
+        for i in range(0,len(seq)-min_length+1):
+            tem = seq[i:min_length+i]
+            params = get_sub_seq_params(tem, i, whole_fold, barcode)
+            row = [exon_name, -n_trans] + params + [split_barcode(barcode), ori_len]
+            seqs.append(tem)
+            rows.append(row)
+        return seqs, rows
+
+    for seqs, rows in map_(process_, exons):
+        sub_seqs.extend(seqs)
+        df_rows.extend(rows)
 
     df = pd.DataFrame(df_rows)
-    df.columns = ['offset', 'pad_fold_score', 'amp_fold_score',
+    df.columns = ['exon_name', 'n_trans', 'offset',
+                  'pad_fold_score', 'amp_fold_score',
                   'self_match_pad', 'self_match_amp', 
                   'tm_region', 'tm1', 'tm2', 'tm3',
                   'target_fold_score', 'target_blocks',
@@ -220,8 +239,9 @@ def primer_design(name, seq, index_prefix, barcode, ori_len, threads=10, min_len
                     'pad_fold_score', 'self_match_pad',
                     'amp_fold_score', 'self_match_amp',
                     'target_blocks', 'target_fold_score',
-                    'tm_region'],
+                    'tm_region', 'n_trans'],
                    inplace=True)
+    df['n_trans'] = - df['n_trans']
     df = df.reset_index(drop=True)
     return df
 
@@ -249,6 +269,7 @@ def split_barcode(barcode):
     barcode_ins = " ".join([''.join(code1), ''.join(code2)])
     return barcode_ins
 
+
 def parse_barcode(barcode_ins):
     """
     Parse insert shape barcode to ordered.
@@ -261,6 +282,7 @@ def parse_barcode(barcode_ins):
         code.append("".join(sorted([code1[i],code2[i]])))
     barcode = "".join(code)
     return barcode
+
 
 def read_existing_codes(path):
     codes = set()
@@ -277,6 +299,7 @@ def main(genelist, gtf, fasta,
          barcode_length=3, threads=10,
          index_prefix=None,
          existing_codes=None,
+         tm_range=(34, 46),
          output_dir="primers"):
     """
     input: genelist gtf fasta
@@ -302,7 +325,7 @@ def main(genelist, gtf, fasta,
     df_gtf = read_gtf(gtf)
     log.info("pickup seqences..")
     log.info(f"Create tmp dir: {TMP_DIR}, fastq, sam... files will save to it")
-    seq_lst = sequence_pickup(df_gtf, fa, genelist, min_length=40)
+    gene2exons = extract_exons(df_gtf, fa, genelist, min_length=40)
     if not exists(output_dir):
         os.mkdir(output_dir)
 
@@ -317,14 +340,22 @@ def main(genelist, gtf, fasta,
         barcodes, ori_lens = coding_random(genelist, barcode_length, existing_codes=existing_codes)
 
     best_rows = []
-    for name, seq in seq_lst.items():
+    genes = []
+    for name, exons in gene2exons.items():
         log.info("Designing primer for gene " + name + ":")
-        res_df = primer_design(name, seq, index_prefix, barcodes[name], ori_lens[name], threads)
-        best_rows.append(res_df.iloc[0, :])
-        out_path = join(output_dir, f"{name}.csv")
-        log.info("Save results to: " + out_path)
-        res_df.to_csv(out_path)
+        res_df = primer_design(name, exons, index_prefix, barcodes[name], ori_lens[name], threads)
+        for i in range(1, 4):
+            res_df = res_df[(tm_range[0] <= res_df[f"tm{i}"]) & (res_df[f"tm{i}"] <= tm_range[1])]
+        if res_df.shape[0] > 0:
+            genes.append(name)
+            best_rows.append(res_df.iloc[0, :])
+            out_path = join(output_dir, f"{name}.csv")
+            log.info("Save results to: " + out_path)
+            res_df.to_csv(out_path, index=False)
+        else:
+            log.warning(f"{name} no rows pass selection.")
     best = pd.DataFrame(best_rows)
+    best['gene'] = genes
     out_path = join(output_dir, "best_primer.csv")
     log.info(f"Store best primers to: {out_path}")
     best.to_csv(out_path, index=False)
