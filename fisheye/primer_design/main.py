@@ -13,6 +13,7 @@ import glob
 import typing as t
 import subprocess as subp
 import pysam
+import editdistance
 from pathos.pools import ProcessPool
 from fisheye.utils import get_logger
 from fisheye.utils import reverse_complement
@@ -31,7 +32,7 @@ def get_tmp_dir(basename):
     return dirname()
 
 
-TMP_DIR = get_tmp_dir("./primer_tmp")
+TMP_DIR = None
 
 
 def read_gene(genelist):
@@ -65,7 +66,10 @@ def extract_exons(df_gtf: pd.DataFrame, fa: Fasta,
         df_gene = df_gtf[df_gtf.gene_name == gene]
         if df_gene.shape[0] <= 0:
             raise ValueError(f"Gene {gene} not exists in GTF file.")
-        df_exons = df_gene[df_gene.type == 'exon'].copy()
+
+        df_exons = df_gene[df_gene.type == 'CDS'].copy()
+        if df_exons.shape[0] == 0:
+            df_exons = df_gene[df_gene.type == 'exon'].copy()
         df_exons = df_exons[df_exons.length > min_length]
         if df_exons.shape[0] == 0:
             raise ValueError(f"Gene {gene} can't found any exon records.")
@@ -158,9 +162,13 @@ def read_align_blocks(
 
 def count_n_aligned_genes(sub_seqs, name, index_prefix, threads):
     fq_path = write_fastq(name, sub_seqs)
-    sam_path = align_se_sen(fq_path, index_prefix,
-                            f"{TMP_DIR}/{name}.sam", threads=threads,
-                            log_file=f"{TMP_DIR}/{name}.bowtie2.log")
+    sam_path = f"{TMP_DIR}/{name}.sam"
+    if not os.path.exists(sam_path):
+        align_se_sen(fq_path, index_prefix,
+                     sam_path, threads=threads,
+                     log_file=f"{TMP_DIR}/{name}.bowtie2.log")
+    else:
+        log.info("{} exists".format(sam_path))
     n_mapped_genes = []
     for _, _, alns in read_align_blocks(sam_path):
         n_genes = len(set([chr_.split("_")[0] for chr_, s, e in alns]))
@@ -215,7 +223,7 @@ def primer_design(name, exons, index_prefix, barcode, ori_len, threads=10, min_l
         for i in range(0,len(seq)-min_length+1):
             tem = seq[i:min_length+i]
             params = get_sub_seq_params(tem, i, whole_fold, barcode)
-            row = [exon_name, -n_trans] + params + [split_barcode(barcode), ori_len]
+            row = [exon_name, n_trans] + params + [tem, split_barcode(barcode), ori_len]
             seqs.append(tem)
             rows.append(row)
         return seqs, rows
@@ -231,18 +239,11 @@ def primer_design(name, exons, index_prefix, barcode, ori_len, threads=10, min_l
                   'tm_region', 'tm1', 'tm2', 'tm3',
                   'target_fold_score', 'target_blocks',
                   'primer_pad', 'primer_amp',
+                  'target_seq',
                   'barcode', 'ori_len']
     n_mapped_genes = count_n_aligned_genes(sub_seqs, name, index_prefix, threads)
     df['n_mapped_genes'] = n_mapped_genes
 
-    df.sort_values(['n_mapped_genes',
-                    'pad_fold_score', 'self_match_pad',
-                    'amp_fold_score', 'self_match_amp',
-                    'target_blocks', 'target_fold_score',
-                    'tm_region', 'n_trans'],
-                   inplace=True)
-    df['n_trans'] = - df['n_trans']
-    df = df.reset_index(drop=True)
     return df
 
 
@@ -295,12 +296,63 @@ def read_existing_codes(path):
     return codes
 
 
+def filter_res(res_df, tm_range, target_fold_thresh, n_mapped_genes_thresh=4):
+    for i in range(1, 4):  # tm1 tm2 tm3
+        res_df = res_df[(tm_range[0] <= res_df[f"tm{i}"]) & (res_df[f"tm{i}"] <= tm_range[1])]
+    res_df = res_df[res_df['n_mapped_genes'] <= n_mapped_genes_thresh]
+    res_df = res_df[res_df['target_fold_score'] <= target_fold_thresh]
+    return res_df
+
+def pick_bests(res_df, best_num, gene, overlap_thresh=40, edit_dist_thresh=10):
+    rows = []
+    i = 0
+    if res_df.shape[0] < best_num:
+        log.warning( "{gene} only has {} rows, small than {}".format(
+            gene, res_df.shape[0], best_num))
+        return [ [gene] + list(row) for _, row in res_df.iterrows()]
+    while len(rows) < best_num:
+        try:
+            row = res_df.iloc[i, :]
+        except IndexError:
+            log.warning("Failed to select best for {}, select top probes".format(gene))
+            rows = [ row for _, row in res_df.iloc[:best_num, :].iterrows() ]
+            break
+        for o in rows:
+            is_overlap = (row.exon_name == o.exon_name) and (abs(row.offset - o.offset) <= overlap_thresh)
+            is_similar = editdistance.distance(row.target_seq, o.target_seq) < edit_dist_thresh
+            if is_overlap or is_similar:
+                break
+        else:
+            # not overlap with any row in rows
+            rows.append(row)
+        i += 1
+    bests = [[gene] + list(row) for row in rows]
+    return bests
+
+def sort_res(res_df):
+    df = res_df
+    df['n_trans'] = - df['n_trans']
+    df.sort_values(['n_mapped_genes',
+                    'pad_fold_score', 'self_match_pad',
+                    'amp_fold_score', 'self_match_amp',
+                    'target_blocks', 'target_fold_score',
+                    'tm_region', 'n_trans'],
+                   inplace=True)
+    df['n_trans'] = - df['n_trans']
+    df = df.reset_index(drop=True)
+    return df
+
 def main(genelist, gtf, fasta,
          barcode_length=3, threads=10,
          index_prefix=None,
          existing_codes=None,
-         tm_range=(34, 46),
-         output_dir="primers"):
+         tm_range=(36, 44),
+         target_fold_thresh=10,
+         output_dir="primers",
+         best_num=2,
+         output_raw=False,
+         tmp_dir=None,
+         ):
     """
     input: genelist gtf fasta
     parameters:
@@ -310,6 +362,12 @@ def main(genelist, gtf, fasta,
         existing_codes: Path to list of existing barcodes.
     output: output_dir
     """
+    global TMP_DIR
+    if (tmp_dir is not None) and (os.path.exists(tmp_dir)):
+        TMP_DIR = tmp_dir
+    else:
+        TMP_DIR = get_tmp_dir("./.primer_tmp")
+
     if index_prefix is None:
         log.info("No bowtie2 index input, will build it.")
         from fisheye.primer_design.extract_tran_seq import extract_trans_seqs
@@ -329,6 +387,7 @@ def main(genelist, gtf, fasta,
     if not exists(output_dir):
         os.mkdir(output_dir)
 
+    # generate barcodes
     if existing_codes is None:
         coding_func = coding_llhc if 'score' in genelist.columns else coding_random
         barcodes, ori_lens = coding_func(genelist, barcode_length)
@@ -339,23 +398,32 @@ def main(genelist, gtf, fasta,
         existing_codes = read_existing_codes(existing_codes)
         barcodes, ori_lens = coding_random(genelist, barcode_length, existing_codes=existing_codes)
 
+    # design probe
     best_rows = []
-    genes = []
+    idx = 0
+    n_genes = len(gene2exons)
     for name, exons in gene2exons.items():
-        log.info("Designing primer for gene " + name + ":")
+        idx += 1
+        log.info(f"Designing primer for gene {name}({idx}/{n_genes}):")
         res_df = primer_design(name, exons, index_prefix, barcodes[name], ori_lens[name], threads)
-        for i in range(1, 4):
-            res_df = res_df[(tm_range[0] <= res_df[f"tm{i}"]) & (res_df[f"tm{i}"] <= tm_range[1])]
+        if (res_df.shape[0] > 0) and output_raw:
+            out_path = join(output_dir, f"{name}.raw.csv")
+            log.info("Save raw results(unfiltered) to: " + out_path)
+            res_df.to_csv(out_path, index=False)
+        res_df = filter_res(res_df, tm_range, target_fold_thresh)
+        res_df = sort_res(res_df)
         if res_df.shape[0] > 0:
-            genes.append(name)
-            best_rows.append(res_df.iloc[0, :])
+            try:
+                best_rows.extend(pick_bests(res_df, best_num, name))
+            except Exception:
+                import ipdb; ipdb.set_trace()
             out_path = join(output_dir, f"{name}.csv")
             log.info("Save results to: " + out_path)
             res_df.to_csv(out_path, index=False)
         else:
             log.warning(f"{name} no rows pass selection.")
     best = pd.DataFrame(best_rows)
-    best['gene'] = genes
+    best.columns = ['gene'] + list(res_df.columns)
     out_path = join(output_dir, "best_primer.csv")
     log.info(f"Store best primers to: {out_path}")
     best.to_csv(out_path, index=False)
