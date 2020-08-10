@@ -247,7 +247,8 @@ def primer_design(name, exons, index_prefix, barcode, ori_len, threads=10, min_l
     return df
 
 
-def build_bowtie2_index(fasta_path, index_prefix, threads=10, log_file=f"{TMP_DIR}/build.bowtie2.log"):
+def build_bowtie2_index(fasta_path, index_prefix, threads=10, log_file=None):
+    log_file = log_file or f"{TMP_DIR}/build.bowtie2.log"
     cmd = ["bowtie2-build", "--threads", str(threads), fasta_path, index_prefix]
     if log_file:
         cmd += [f' > {log_file} 2>&1']
