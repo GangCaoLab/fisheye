@@ -301,6 +301,9 @@ def filter_res(res_df, tm_range, target_fold_thresh, n_mapped_genes_thresh=4):
         res_df = res_df[(tm_range[0] <= res_df[f"tm{i}"]) & (res_df[f"tm{i}"] <= tm_range[1])]
     res_df = res_df[res_df['n_mapped_genes'] <= n_mapped_genes_thresh]
     res_df = res_df[res_df['target_fold_score'] <= target_fold_thresh]
+    # remove seqs contain two GC in 5' or 3'
+    res_df = res_df[~res_df['primer_pad'].str.match("^[GC]{2}.*")]
+    res_df = res_df[~res_df['primer_pad'].str.match(".*?[GC]{2}$")]
     return res_df
 
 def pick_bests(res_df, best_num, gene, overlap_thresh=40, edit_dist_thresh=10):
@@ -350,7 +353,7 @@ def main(genelist, gtf, fasta,
          target_fold_thresh=10,
          output_dir="primers",
          best_num=2,
-         output_raw=False,
+         output_raw=True,
          tmp_dir=None,
          ):
     """
