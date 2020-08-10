@@ -346,6 +346,23 @@ def sort_res(res_df):
     df = df.reset_index(drop=True)
     return df
 
+def build_index(threads):
+    index_prefix = f"{TMP_DIR}/transcript"
+    trans_fasta_path = f"{TMP_DIR}/transcript.fa"
+    if os.path.exists(trans_fasta_path):
+        log.info("transfript.fa found in tmp dir.")
+    else:
+        from fisheye.primer_design.extract_tran_seq import extract_trans_seqs
+        extract_trans_seqs(gtf, fasta, trans_fasta_path)
+    index_flag = index_prefix + ".1.bt2"
+    if os.path.exists(index_flag):
+        log.info("bowtie2 index found in tmp dir.")
+    else:
+        log.info("No bowtie2 index input, will build it.")
+        build_bowtie2_index(trans_fasta_path, index_prefix, threads)
+    return index_prefix
+
+
 def main(genelist, gtf, fasta,
          barcode_length=3, threads=10,
          index_prefix=None,
@@ -373,12 +390,7 @@ def main(genelist, gtf, fasta,
         TMP_DIR = get_tmp_dir("./.primer_tmp")
 
     if index_prefix is None:
-        log.info("No bowtie2 index input, will build it.")
-        from fisheye.primer_design.extract_tran_seq import extract_trans_seqs
-        trans_fasta_path = f"{TMP_DIR}/transcript.fa"
-        extract_trans_seqs(gtf, fasta, trans_fasta_path)
-        index_prefix = f"{TMP_DIR}/transcript"
-        build_bowtie2_index(trans_fasta_path, index_prefix, threads)
+        index_prefix = build_index(threads)
 
     fa = Fasta(fasta)
     genelist = read_gene(genelist)
@@ -417,10 +429,7 @@ def main(genelist, gtf, fasta,
         res_df = filter_res(res_df, tm_range, target_fold_thresh)
         res_df = sort_res(res_df)
         if res_df.shape[0] > 0:
-            try:
-                best_rows.extend(pick_bests(res_df, best_num, name))
-            except Exception:
-                import ipdb; ipdb.set_trace()
+            best_rows.extend(pick_bests(res_df, best_num, name))
             out_path = join(output_dir, f"{name}.csv")
             log.info("Save results to: " + out_path)
             res_df.to_csv(out_path, index=False)
