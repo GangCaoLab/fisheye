@@ -346,7 +346,7 @@ def sort_res(res_df):
     df = df.reset_index(drop=True)
     return df
 
-def build_index(threads):
+def build_index(threads, gtf, fasta):
     index_prefix = f"{TMP_DIR}/transcript"
     trans_fasta_path = f"{TMP_DIR}/transcript.fa"
     if os.path.exists(trans_fasta_path):
@@ -390,7 +390,7 @@ def main(genelist, gtf, fasta,
         TMP_DIR = get_tmp_dir("./.primer_tmp")
 
     if index_prefix is None:
-        index_prefix = build_index(threads)
+        index_prefix = build_index(threads, gtf, fasta)
 
     fa = Fasta(fasta)
     genelist = read_gene(genelist)
@@ -418,6 +418,7 @@ def main(genelist, gtf, fasta,
     best_rows = []
     idx = 0
     n_genes = len(gene2exons)
+    res_df = None
     for name, exons in gene2exons.items():
         idx += 1
         log.info(f"Designing primer for gene {name}({idx}/{n_genes}):")
@@ -435,11 +436,14 @@ def main(genelist, gtf, fasta,
             res_df.to_csv(out_path, index=False)
         else:
             log.warning(f"{name} no rows pass selection.")
-    best = pd.DataFrame(best_rows)
-    best.columns = ['gene'] + list(res_df.columns)
-    out_path = join(output_dir, "best_primer.csv")
-    log.info(f"Store best primers to: {out_path}")
-    best.to_csv(out_path, index=False)
+    if res_df:
+        best = pd.DataFrame(best_rows)
+        best.columns = ['gene'] + list(res_df.columns)
+        out_path = join(output_dir, "best_primer.csv")
+        log.info(f"Store best primers to: {out_path}")
+        best.to_csv(out_path, index=False)
+    else:
+        log.warning("No result.")
 
 
 fire.Fire(main)
