@@ -35,13 +35,20 @@ def get_tmp_dir(basename):
 TMP_DIR = None
 
 
-def read_gene(genelist):
-    genelist = pd.read_csv(genelist, header=None, comment='#')
-    if genelist.shape[1] == 1:
-        genelist.columns = ['geneID']
+def read_gene(genelist_path):
+    genelist = pd.read_csv(genelist_path, header=None, comment='#')
+    if genelist.iloc[0,0].startswith('gene'):
+        # has header
+        genelist = pd.read_csv(genelist_path, header=True, comment='#')
+        columns = list(genelist.columns)
+        columns[0] = 'geneID'
+        genelist.columns = columns
     else:
-        genelist = genelist.iloc[:, :2]
-        genelist.columns = ['geneID', 'score']
+        if genelist.shape[1] == 1:
+            genelist.columns = ['geneID']
+        else:
+            genelist = genelist.iloc[:, :2]
+            genelist.columns = ['geneID', 'barcode']
     return genelist
 
 
@@ -377,6 +384,7 @@ def main(genelist, gtf, fasta,
     """
     input: genelist gtf fasta
     parameters:
+        genelist: genelist file, csv file, header, required: geneID, optional: barcode, score
         barcode_length: Length of barcode.
         threads: Number of threads for bowtie2 align.
         index_prefix: Index prefix for bowtie2 align.
@@ -404,15 +412,19 @@ def main(genelist, gtf, fasta,
         os.mkdir(output_dir)
 
     # generate barcodes
-    if existing_codes is None:
-        coding_func = coding_llhc if 'score' in genelist.columns else coding_random
-        barcodes, ori_lens = coding_func(genelist, barcode_length)
+    if 'barcode' in genelist.columns:
+        barcodes = {row['geneID']: row['barcode'] for _, row in genelist.iterrows()}
+        ori_lens = {row['geneID']: 2 for _, row in genelist.iterrows()}
     else:
-        log.info(f"Consider exisiting barcodes in path: {existing_codes}")
-        if 'score' in genelist.columns:
-            log.warning("Ignore score of genelist, due to existing barcodes.")
-        existing_codes = read_existing_codes(existing_codes)
-        barcodes, ori_lens = coding_random(genelist, barcode_length, existing_codes=existing_codes)
+        if existing_codes is None:
+            coding_func = coding_llhc if 'score' in genelist.columns else coding_random
+            barcodes, ori_lens = coding_func(genelist, barcode_length)
+        else:
+            log.info(f"Consider exisiting barcodes in path: {existing_codes}")
+            if 'score' in genelist.columns:
+                log.warning("Ignore score of genelist, due to existing barcodes.")
+            existing_codes = read_existing_codes(existing_codes)
+            barcodes, ori_lens = coding_random(genelist, barcode_length, existing_codes=existing_codes)
 
     # design probe
     best_rows = []
@@ -436,7 +448,7 @@ def main(genelist, gtf, fasta,
             res_df.to_csv(out_path, index=False)
         else:
             log.warning(f"{name} no rows pass selection.")
-    if res_df:
+    if res_df is not None:
         best = pd.DataFrame(best_rows)
         best.columns = ['gene'] + list(res_df.columns)
         out_path = join(output_dir, "best_primer.csv")
