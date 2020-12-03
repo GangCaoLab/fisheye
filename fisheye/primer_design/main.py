@@ -183,7 +183,7 @@ def count_n_aligned_genes(sub_seqs, name, index_prefix, threads):
     return n_mapped_genes
 
 
-def get_sub_seq_params(tem, offset, whole_fold, barcode):
+def get_sub_seq_params(tem, anchor1, anchor2, offset, whole_fold, barcode):
     # small is better, means RNA more unlikely to fold
     target_fold_score = -RNA.fold_compound(tem).mfe()[1]
     tem1 = tem[0:13]
@@ -198,8 +198,8 @@ def get_sub_seq_params(tem, offset, whole_fold, barcode):
     tem2_re = reverse_complement(tem2)
     tem3_re = reverse_complement(tem3)
     code1, code2 = split_barcode(barcode).split(" ")
-    pad_probe = tem1_re+"CC"+code1+"TGCGTCTATTTGT"+code2+"TAGTGGAGCCT"+tem2_re
-    amp_probe = tem3_re+tem4+"AGGCTCCACTA"
+    pad_probe = tem1_re+"CC"+code1+anchor1+code2+anchor2+tem2_re
+    amp_probe = tem3_re+tem4+reverse_complement(anchor2)
     match_pairs_pad = self_match(pad_probe)
     match_pairs_amp = self_match(amp_probe)
     pad_fold_score = -RNA.fold_compound(pad_probe).mfe()[1]
@@ -215,7 +215,7 @@ def get_sub_seq_params(tem, offset, whole_fold, barcode):
     ]
 
 
-def primer_design(name, exons, index_prefix, barcode, ori_len, threads=10, min_length=40):
+def primer_design(name, anchor1, anchor2, exons, index_prefix, barcode, ori_len, threads=10, min_length=40):
     """Design primers for one gene"""
     df_rows = []
     sub_seqs = []
@@ -229,7 +229,7 @@ def primer_design(name, exons, index_prefix, barcode, ori_len, threads=10, min_l
         seqs = []; rows = []
         for i in range(0,len(seq)-min_length+1):
             tem = seq[i:min_length+i]
-            params = get_sub_seq_params(tem, i, whole_fold, barcode)
+            params = get_sub_seq_params(tem, anchor1, anchor2, i, whole_fold, barcode)
             row = [exon_name, n_trans] + params + [tem, split_barcode(barcode), ori_len]
             seqs.append(tem)
             rows.append(row)
@@ -370,12 +370,26 @@ def build_index(threads, gtf, fasta):
     return index_prefix
 
 
+def assert_genes(df_gtf, df_genes):
+    ids = df_genes['geneID']
+    not_present = []
+    for gid in ids:
+        df_ = df_gtf[df_gtf.gene_name == gid]
+        if df_.shape[0] == 0:
+            not_present.append(gid)
+    if len(not_present) > 0:
+        msg = "\n".join(not_present)
+        raise ValueError(f"These genes not in GTF file:\n"+msg)
+
+
 def main(genelist, gtf, fasta,
          barcode_length=3, threads=10,
          index_prefix=None,
          existing_codes=None,
          tm_range=(36, 44),
          target_fold_thresh=10,
+         anchor1="TGCGTCTATTT",
+         anchor2="TAGTGGAGCCT",
          output_dir="primers",
          best_num=2,
          output_raw=True,
@@ -405,6 +419,9 @@ def main(genelist, gtf, fasta,
 
     log.info("Reading gtf: " + gtf)
     df_gtf = read_gtf(gtf)
+
+    assert_genes(df_gtf, genelist)
+
     log.info("pickup seqences..")
     log.info(f"Create tmp dir: {TMP_DIR}, fastq, sam... files will save to it")
     gene2exons = extract_exons(df_gtf, fa, genelist, min_length=40)
@@ -434,7 +451,7 @@ def main(genelist, gtf, fasta,
     for name, exons in gene2exons.items():
         idx += 1
         log.info(f"Designing primer for gene {name}({idx}/{n_genes}):")
-        res_df = primer_design(name, exons, index_prefix, barcodes[name], ori_lens[name], threads)
+        res_df = primer_design(name, anchor1, anchor2, exons, index_prefix, barcodes[name], ori_lens[name], threads)
         if (res_df.shape[0] > 0) and output_raw:
             out_path = join(output_dir, f"{name}.raw.csv")
             log.info("Save raw results(unfiltered) to: " + out_path)

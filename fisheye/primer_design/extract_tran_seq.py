@@ -9,6 +9,13 @@ from fisheye.utils import get_logger
 log = get_logger(__name__)
 
 
+def change_chrom_name(chrom):
+    if chrom.startswith('chr'):
+        return chrom[3:]
+    else:
+        return 'chr'+chrom
+
+
 def extract_trans_seqs(gtf_path, fa_path, output_fa_path):
     """Extract transcript's sequences.
     """
@@ -42,7 +49,11 @@ def extract_trans_seqs(gtf_path, fa_path, output_fa_path):
     seq_dict = {}
     for key_, [chrom, strand, exons] in list(trans.items()):
         if len(exons) == 1:
-            seq = fa[chrom][exons[0][0]:exons[0][1]].seq
+            try:
+                seq = fa[chrom][exons[0][0]:exons[0][1]].seq
+            except KeyError:
+                chrom = change_chrom_name(chrom)
+                seq = fa[chrom][exons[0][0]:exons[0][1]].seq
             if strand == '-':
                 seq = reverse_complement(seq)
                 seq_dict[key_] = seq
@@ -51,7 +62,11 @@ def extract_trans_seqs(gtf_path, fa_path, output_fa_path):
         else:
             seq_lst = []
             for i in range(0, len(exons)):
-                seq = fa[chrom][exons[i][0]:exons[i][1]].seq
+                try:
+                    seq = fa[chrom][exons[0][0]:exons[0][1]].seq
+                except KeyError:
+                    chrom = change_chrom_name(chrom)
+                    seq = fa[chrom][exons[0][0]:exons[0][1]].seq
                 if strand == '-':
                     seq = reverse_complement(seq)
                     seq_lst.append(seq)
